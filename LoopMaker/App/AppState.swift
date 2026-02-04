@@ -10,6 +10,10 @@ public final class AppState: ObservableObject {
     @Published var showSettings = false
     @Published var showExport = false
 
+    // MARK: - Setup State
+    @Published var showSetup = false
+    @Published var backendManager = BackendProcessManager()
+
     // MARK: - Generation State
     @Published var isGenerating = false
     @Published var generationProgress: Double = 0
@@ -20,7 +24,8 @@ public final class AppState: ObservableObject {
     @Published var selectedModel: ModelType = .small
     @Published var modelDownloadStates: [ModelType: ModelDownloadState] = [
         .small: .notDownloaded,
-        .medium: .notDownloaded
+        .medium: .notDownloaded,
+        .acestep: .notDownloaded
     ]
 
     // MARK: - Library State
@@ -35,6 +40,71 @@ public final class AppState: ObservableObject {
     // MARK: - Services
     private var generationTask: Task<Void, Never>?
     private let pythonBackend = PythonBackendService()
+    let audioPlayer = AudioPlayer()
+
+    // MARK: - Backend Status
+    @Published var backendConnected = false
+    @Published var backendError: String?
+
+    // MARK: - Initialization
+
+    public init() {
+        // Register as shared instance for app-level access
+        registerAsShared()
+
+        // Start backend automatically on launch
+        Task {
+            await startBackendAndSetup()
+        }
+    }
+
+    /// Start backend process and show setup if needed
+    private func startBackendAndSetup() async {
+        // Show setup view for first-launch or if not already running
+        await backendManager.ensureBackendRunning()
+
+        switch backendManager.state {
+        case .running:
+            // Backend is ready, check model status
+            backendConnected = true
+            await checkModelStatus()
+
+        case .pythonMissing, .error:
+            // Show setup view for errors
+            showSetup = true
+            backendConnected = false
+            backendError = backendManager.state.userMessage
+
+        default:
+            // Still setting up - this shouldn't happen as ensureBackendRunning awaits
+            break
+        }
+    }
+
+    /// Check model download status from backend
+    private func checkModelStatus() async {
+        do {
+            let status = try await pythonBackend.getModelStatus()
+            for (model, isDownloaded) in status {
+                modelDownloadStates[model] = isDownloaded ? .downloaded : .notDownloaded
+            }
+            backendError = nil
+        } catch {
+            backendError = "Could not fetch model status"
+        }
+    }
+
+    /// Retry backend setup after an error
+    func retryBackendSetup() async {
+        showSetup = true
+        await backendManager.retrySetup()
+
+        if case .running = backendManager.state {
+            showSetup = false
+            backendConnected = true
+            await checkModelStatus()
+        }
+    }
 
     // MARK: - Computed Properties
 
@@ -49,6 +119,7 @@ public final class AppState: ObservableObject {
     }
 
     var canGenerate: Bool {
+        guard backendConnected else { return false }
         guard let state = modelDownloadStates[selectedModel] else { return false }
         return state.isDownloaded && !isGenerating
     }
@@ -123,6 +194,42 @@ public final class AppState: ObservableObject {
         if let index = tracks.firstIndex(where: { $0.id == track.id }) {
             tracks[index].isFavorite.toggle()
         }
+    }
+
+    // MARK: - Playback Controls
+
+    func playTrack(_ track: Track) {
+        selectedTrack = track
+        audioPlayer.play(url: track.audioURL)
+        isPlaying = true
+    }
+
+    func togglePlayPause() {
+        guard let track = selectedTrack else { return }
+        if isPlaying {
+            audioPlayer.pause()
+            isPlaying = false
+        } else {
+            audioPlayer.play(url: track.audioURL)
+            isPlaying = true
+        }
+    }
+
+    func stopPlayback() {
+        audioPlayer.stop()
+        isPlaying = false
+        playbackProgress = 0
+    }
+
+    func seekPlayback(to position: Double) {
+        audioPlayer.seek(to: position)
+        playbackProgress = position
+    }
+
+    /// Sync playback state from audio player
+    func syncPlaybackState() {
+        isPlaying = audioPlayer.isPlaying
+        playbackProgress = audioPlayer.progress
     }
 }
 

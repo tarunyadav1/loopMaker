@@ -2,56 +2,166 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject var appState: AppState
+    @State private var localTrackSelection: Track?
+    @State private var viewMode: ViewMode = .grid
+    @State private var searchText = ""
+
+    enum ViewMode {
+        case grid, list
+    }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            // Header
+            headerView
+
+            // Content
             if appState.tracks.isEmpty {
                 emptyState
             } else {
-                trackList
+                trackContent
             }
         }
-        .navigationTitle("Library")
-        .searchable(text: $appState.searchQuery, prompt: "Search tracks")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    appState.selectedSidebarItem = .generate
-                } label: {
-                    Label("New", systemImage: "plus")
-                }
-            }
-        }
+        .background(Theme.background)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "music.note.list")
-                .font(.system(size: 64))
-                .foregroundStyle(.tertiary)
+    // MARK: - Header
 
-            Text("No Tracks Yet")
-                .font(.title2.bold())
+    private var headerView: some View {
+        HStack(spacing: Spacing.md) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                Text("Library")
+                    .title1Text()
 
-            Text("Generate your first track to see it here")
-                .foregroundStyle(.secondary)
+                Text("\(appState.tracks.count) tracks")
+                    .font(Typography.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
 
-            Button("Generate Music") {
+            Spacer()
+
+            // Search
+            SearchBar(text: $searchText, placeholder: "Search library...", showShortcut: false)
+                .frame(maxWidth: 250)
+
+            // View toggle
+            HStack(spacing: Spacing.xs) {
+                ViewModeButton(icon: "square.grid.2x2", isSelected: viewMode == .grid) {
+                    viewMode = .grid
+                }
+
+                ViewModeButton(icon: "list.bullet", isSelected: viewMode == .list) {
+                    viewMode = .list
+                }
+            }
+
+            // New track button
+            ActionButton(title: "New", icon: "plus", variant: .primary, size: .medium) {
                 appState.selectedSidebarItem = .generate
             }
-            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.md)
+        .background(Theme.backgroundSecondary)
+    }
+
+    // MARK: - Empty State
+
+    private var emptyState: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+
+            ZStack {
+                Circle()
+                    .fill(Theme.backgroundTertiary)
+                    .frame(width: 120, height: 120)
+
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 48))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            VStack(spacing: Spacing.sm) {
+                Text("No Tracks Yet")
+                    .title2Text()
+
+                Text("Generate your first track to see it here")
+                    .font(Typography.body)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            ActionButton(title: "Generate Music", icon: "waveform", variant: .gradient, size: .large) {
+                appState.selectedSidebarItem = .generate
+            }
+
+            Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var trackList: some View {
-        List(appState.filteredTracks, selection: $appState.selectedTrack) { track in
-            TrackRow(track: track)
-                .tag(track)
-                .contextMenu {
-                    trackContextMenu(for: track)
-                }
+    // MARK: - Track Content
+
+    private var trackContent: some View {
+        ScrollView {
+            if viewMode == .grid {
+                trackGrid
+            } else {
+                trackList
+            }
         }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.md)
+    }
+
+    private var trackGrid: some View {
+        LazyVGrid(columns: [
+            GridItem(.adaptive(minimum: 200, maximum: 280), spacing: Spacing.md)
+        ], spacing: Spacing.md) {
+            ForEach(filteredTracks) { track in
+                TrackGridItem(
+                    track: track,
+                    isSelected: localTrackSelection?.id == track.id,
+                    onTap: { selectTrack(track) },
+                    onDoubleTap: { playTrack(track) }
+                )
+                .contextMenu { trackContextMenu(for: track) }
+            }
+        }
+    }
+
+    private var trackList: some View {
+        VStack(spacing: Spacing.xs) {
+            ForEach(filteredTracks) { track in
+                DarkTrackRow(
+                    track: track,
+                    isSelected: localTrackSelection?.id == track.id,
+                    onTap: { selectTrack(track) },
+                    onDoubleTap: { playTrack(track) }
+                )
+                .contextMenu { trackContextMenu(for: track) }
+            }
+        }
+    }
+
+    private var filteredTracks: [Track] {
+        if searchText.isEmpty {
+            return appState.tracks
+        }
+        return appState.tracks.filter {
+            $0.prompt.localizedCaseInsensitiveContains(searchText) ||
+            ($0.title?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
+
+    // MARK: - Actions
+
+    private func selectTrack(_ track: Track) {
+        localTrackSelection = track
+        appState.selectedTrack = track
+    }
+
+    private func playTrack(_ track: Track) {
+        appState.playTrack(track)
     }
 
     @ViewBuilder
@@ -82,80 +192,295 @@ struct LibraryView: View {
     }
 }
 
-struct TrackRow: View {
-    let track: Track
+// MARK: - View Mode Button
+
+struct ViewModeButton: View {
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Thumbnail
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.blue.gradient)
-                .frame(width: 48, height: 48)
-                .overlay {
-                    Image(systemName: "waveform")
-                        .foregroundStyle(.white)
-                }
-
-            // Info
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(track.displayTitle)
-                        .font(.headline)
-                        .lineLimit(1)
-
-                    if track.isFavorite {
-                        Image(systemName: "heart.fill")
-                            .foregroundStyle(.red)
-                            .font(.caption)
-                    }
-                }
-
-                Text("\(track.duration.displayName) • \(track.model.displayName)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            // Date
-            Text(track.formattedDate)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundStyle(isSelected ? Theme.accentPrimary : Theme.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(isSelected ? Theme.accentPrimary.opacity(0.15) : (isHovered ? Theme.backgroundTertiary : Color.clear))
+                )
         }
-        .padding(.vertical, 4)
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 
+// MARK: - Track Grid Item
+
+struct TrackGridItem: View {
+    let track: Track
+    let isSelected: Bool
+    var onTap: () -> Void = {}
+    var onDoubleTap: () -> Void = {}
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                // Thumbnail
+                ZStack {
+                    RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                        .fill(Theme.accentGradient)
+                        .aspectRatio(1, contentMode: .fit)
+
+                    Image(systemName: "waveform")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.white.opacity(0.8))
+
+                    // Play overlay on hover
+                    if isHovered {
+                        RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                            .fill(Color.black.opacity(0.3))
+
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(.white)
+                    }
+
+                    // Favorite badge
+                    if track.isFavorite {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.white)
+                                    .padding(Spacing.sm)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+
+                // Info
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.displayTitle)
+                        .font(Typography.bodyMedium)
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+
+                    Text("\(track.duration.displayName) \u{2022} \(track.model.displayName)")
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .padding(Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                    .fill(isSelected ? Theme.accentPrimary.opacity(0.1) : (isHovered ? Theme.backgroundTertiary : Theme.backgroundSecondary))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                    .strokeBorder(isSelected ? Theme.accentPrimary : Color.clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
+        .onTapGesture(count: 2) {
+            onDoubleTap()
+        }
+        .onTapGesture {
+            onTap()
+        }
+    }
+}
+
+// MARK: - Dark Track Row
+
+struct DarkTrackRow: View {
+    let track: Track
+    let isSelected: Bool
+    var onTap: () -> Void = {}
+    var onDoubleTap: () -> Void = {}
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: Spacing.md) {
+                // Thumbnail
+                ZStack {
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(Theme.accentGradient)
+                        .frame(width: 48, height: 48)
+
+                    Image(systemName: "waveform")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white)
+
+                    if isHovered {
+                        RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                            .fill(Color.black.opacity(0.3))
+                            .frame(width: 48, height: 48)
+
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.white)
+                    }
+                }
+
+                // Info
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: Spacing.sm) {
+                        Text(track.displayTitle)
+                            .font(Typography.bodyMedium)
+                            .foregroundStyle(Theme.textPrimary)
+                            .lineLimit(1)
+
+                        if track.isFavorite {
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.error)
+                        }
+                    }
+
+                    Text(track.prompt)
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                // Duration
+                Text(track.duration.displayName)
+                    .font(Typography.caption)
+                    .foregroundStyle(Theme.textSecondary)
+
+                // Date
+                Text(track.formattedDate)
+                    .font(Typography.caption)
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 100, alignment: .trailing)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                    .fill(isSelected ? Theme.accentPrimary.opacity(0.1) : (isHovered ? Theme.backgroundTertiary : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                    .strokeBorder(isSelected ? Theme.accentPrimary.opacity(0.5) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+        .onTapGesture(count: 2) {
+            onDoubleTap()
+        }
+        .onTapGesture {
+            onTap()
+        }
+    }
+}
+
+// MARK: - Favorites View
+
 struct FavoritesView: View {
     @EnvironmentObject var appState: AppState
+    @State private var localSelection: Track?
 
     var favorites: [Track] {
         appState.tracks.filter { $0.isFavorite }
     }
 
     var body: some View {
-        Group {
-            if favorites.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "heart")
-                        .font(.system(size: 64))
-                        .foregroundStyle(.tertiary)
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Favorites")
+                        .title1Text()
 
-                    Text("No Favorites")
-                        .font(.title2.bold())
-
-                    Text("Heart a track to add it here")
-                        .foregroundStyle(.secondary)
+                    Text("\(favorites.count) tracks")
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textTertiary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
+            .background(Theme.backgroundSecondary)
+
+            // Content
+            if favorites.isEmpty {
+                emptyFavoritesState
             } else {
-                List(favorites, selection: $appState.selectedTrack) { track in
-                    TrackRow(track: track)
-                        .tag(track)
+                ScrollView {
+                    VStack(spacing: Spacing.xs) {
+                        ForEach(favorites) { track in
+                            DarkTrackRow(
+                                track: track,
+                                isSelected: localSelection?.id == track.id,
+                                onTap: {
+                                    localSelection = track
+                                    appState.selectedTrack = track
+                                },
+                                onDoubleTap: {
+                                    appState.playTrack(track)
+                                }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.vertical, Spacing.md)
                 }
             }
         }
-        .navigationTitle("Favorites")
+        .background(Theme.background)
+    }
+
+    private var emptyFavoritesState: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+
+            ZStack {
+                Circle()
+                    .fill(Theme.backgroundTertiary)
+                    .frame(width: 120, height: 120)
+
+                Image(systemName: "heart")
+                    .font(.system(size: 48))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            VStack(spacing: Spacing.sm) {
+                Text("No Favorites")
+                    .title2Text()
+
+                Text("Heart a track to add it here")
+                    .font(Typography.body)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

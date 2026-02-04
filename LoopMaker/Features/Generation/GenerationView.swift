@@ -4,96 +4,267 @@ struct GenerationView: View {
     @EnvironmentObject var appState: AppState
     @State private var prompt = ""
     @State private var selectedDuration: TrackDuration = .medium
+    @State private var selectedGenreCard: GenreCardData?
     @State private var selectedGenre: GenrePreset?
+    @State private var isInstrumental = true
+    @State private var lyrics = ""
+    @State private var selectedQualityMode: QualityMode = .fast
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
-                // Header
-                headerSection
+            VStack(spacing: Spacing.xl) {
+                // Hero section
+                heroSection
 
-                // Prompt Input
+                // Prompt input
                 promptSection
 
-                // Genre Presets
-                genreSection
+                // Mode toggles
+                modeToggles
 
-                // Duration & Model
+                // Lyrics editor (ACE-Step with vocals)
+                if !isInstrumental && appState.selectedModel.supportsLyrics {
+                    lyricsSection
+                }
+
+                // Genre cards
+                GenreCardGrid(
+                    genres: GenreCardData.presets,
+                    selectedGenre: $selectedGenreCard,
+                    onSelect: { genre in
+                        // Map to GenrePreset
+                        selectedGenre = GenrePreset.allPresets.first { $0.name == genre.name }
+                    }
+                )
+
+                // Settings section
                 settingsSection
 
-                // Generate Button
+                // Generate button
                 generateButton
 
-                // Progress
+                // Progress section
                 if appState.isGenerating {
                     progressSection
                 }
 
-                Spacer()
+                Spacer(minLength: Spacing.xxl)
             }
-            .padding(32)
+            .padding(.horizontal, Spacing.xl)
+            .padding(.top, Spacing.xl)
         }
-        .navigationTitle("Generate Music")
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Theme.background)
+        .onChange(of: appState.selectedModel) { _, newModel in
+            // Adjust duration if current selection is incompatible
+            if !selectedDuration.isCompatible(with: newModel) {
+                selectedDuration = TrackDuration.available(for: newModel).last ?? .medium
+            }
+        }
     }
 
-    // MARK: - Sections
+    // MARK: - Hero Section
 
-    private var headerSection: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "waveform.circle.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(.blue.gradient)
+    private var heroSection: some View {
+        VStack(spacing: Spacing.sm) {
+            Text("Create something")
+                .heroText()
 
-            Text("Create AI Music")
-                .font(.largeTitle.bold())
-
-            Text("Describe the music you want to create")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            Text("new today")
+                .font(Typography.hero)
+                .foregroundStyle(Theme.accentGradient)
         }
-        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Spacing.lg)
     }
+
+    // MARK: - Prompt Section
 
     private var promptSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Prompt", systemImage: "text.bubble")
-                .font(.headline)
+        GlassTextField(
+            text: $prompt,
+            placeholder: "Describe the music you want to create...",
+            icon: "wand.and.stars",
+            submitLabel: "Generate",
+            isEnabled: canGenerate,
+            onSubmit: generate
+        )
+    }
 
-            TextEditor(text: $prompt)
-                .font(.body)
-                .frame(height: 100)
-                .padding(12)
-                .background(.regularMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(.quaternary, lineWidth: 1)
-                )
+    // MARK: - Mode Toggles
 
-            Text("Example: \"chill lo-fi beats with vinyl crackle and soft piano\"")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    private var modeToggles: some View {
+        HStack(spacing: Spacing.sm) {
+            ModeToggleButton(
+                title: "Instrumental",
+                icon: "pianokeys",
+                isSelected: isInstrumental,
+                action: { isInstrumental = true }
+            )
+
+            ModeToggleButton(
+                title: "With Lyrics",
+                icon: "music.mic",
+                isSelected: !isInstrumental,
+                isDisabled: !appState.selectedModel.supportsLyrics,
+                action: {
+                    if appState.selectedModel.supportsLyrics {
+                        isInstrumental = false
+                    }
+                }
+            )
+
+            Spacer()
+
+            // Quick actions
+            HStack(spacing: Spacing.sm) {
+                QuickActionButton(icon: "dice", tooltip: "Random prompt") {
+                    prompt = randomPrompts.randomElement() ?? ""
+                }
+
+                QuickActionButton(icon: "clock.arrow.circlepath", tooltip: "Recent") {}
+
+                QuickActionButton(icon: "bookmark", tooltip: "Saved prompts") {}
+            }
         }
     }
 
-    private var genreSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Genre Preset", systemImage: "music.note")
-                .font(.headline)
+    // MARK: - Lyrics Section
 
-            LazyVGrid(columns: [
-                GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)
-            ], spacing: 12) {
-                ForEach(GenrePreset.allPresets) { preset in
-                    GenreButton(
-                        preset: preset,
-                        isSelected: selectedGenre?.id == preset.id
-                    ) {
-                        if selectedGenre?.id == preset.id {
-                            selectedGenre = nil
-                        } else {
-                            selectedGenre = preset
+    private var lyricsSection: some View {
+        GlassCard(padding: Spacing.md, cornerRadius: Spacing.radiusMd) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                HStack {
+                    Label("Lyrics", systemImage: "music.mic")
+                        .font(Typography.bodyMedium)
+                        .foregroundStyle(Theme.textSecondary)
+
+                    Spacer()
+
+                    // Quick structure tags
+                    HStack(spacing: Spacing.xs) {
+                        LyricsTagButton(tag: "[verse]") { insertLyricsTag("[verse]") }
+                        LyricsTagButton(tag: "[chorus]") { insertLyricsTag("[chorus]") }
+                        LyricsTagButton(tag: "[bridge]") { insertLyricsTag("[bridge]") }
+                    }
+                }
+
+                TextEditor(text: $lyrics)
+                    .font(Typography.body)
+                    .foregroundStyle(Theme.textPrimary)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 100, maxHeight: 200)
+                    .padding(Spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                            .fill(Theme.backgroundTertiary.opacity(0.5))
+                    )
+
+                Text("Use [verse], [chorus], [bridge] tags to structure your song")
+                    .font(Typography.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+    }
+
+    private func insertLyricsTag(_ tag: String) {
+        if lyrics.isEmpty {
+            lyrics = tag + "\n"
+        } else if !lyrics.hasSuffix("\n") {
+            lyrics += "\n" + tag + "\n"
+        } else {
+            lyrics += tag + "\n"
+        }
+    }
+
+    // MARK: - Settings Section
+
+    private var settingsSection: some View {
+        GlassCard(padding: Spacing.md, cornerRadius: Spacing.radiusMd) {
+            VStack(spacing: Spacing.md) {
+                // Duration
+                HStack {
+                    Label("Duration", systemImage: "clock")
+                        .font(Typography.bodyMedium)
+                        .foregroundStyle(Theme.textSecondary)
+
+                    Spacer()
+
+                    HStack(spacing: Spacing.xs) {
+                        ForEach(availableDurations, id: \.self) { duration in
+                            DurationChip(
+                                duration: duration,
+                                isSelected: selectedDuration == duration,
+                                action: { selectedDuration = duration }
+                            )
+                        }
+                    }
+                }
+
+                Divider()
+                    .background(Theme.glassBorder)
+
+                // Model
+                HStack {
+                    Label("Model", systemImage: "cpu")
+                        .font(Typography.bodyMedium)
+                        .foregroundStyle(Theme.textSecondary)
+
+                    Spacer()
+
+                    HStack(spacing: Spacing.xs) {
+                        ForEach(ModelType.allCases, id: \.self) { model in
+                            ModelChip(
+                                model: model,
+                                isSelected: appState.selectedModel == model,
+                                downloadState: appState.modelDownloadStates[model] ?? .notDownloaded,
+                                action: { appState.selectedModel = model },
+                                onDownload: { appState.downloadModel(model) }
+                            )
+                        }
+                    }
+                }
+
+                // Quality mode (ACE-Step only)
+                if appState.selectedModel.family == .acestep {
+                    Divider()
+                        .background(Theme.glassBorder)
+
+                    HStack {
+                        Label("Quality", systemImage: "sparkles")
+                            .font(Typography.bodyMedium)
+                            .foregroundStyle(Theme.textSecondary)
+
+                        Spacer()
+
+                        HStack(spacing: Spacing.xs) {
+                            ForEach(QualityMode.allCases, id: \.self) { mode in
+                                QualityChip(
+                                    mode: mode,
+                                    isSelected: selectedQualityMode == mode,
+                                    action: { selectedQualityMode = mode }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Backend status warning
+                if !appState.backendConnected {
+                    Divider()
+                        .background(Theme.glassBorder)
+
+                    HStack(spacing: Spacing.sm) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Theme.warning)
+
+                        Text(appState.backendError ?? "Backend not connected")
+                            .font(Typography.caption)
+                            .foregroundStyle(Theme.textSecondary)
+
+                        Spacer()
+
+                        ActionButton(title: "Setup", variant: .outline, size: .small) {
+                            appState.showSetup = true
                         }
                     }
                 }
@@ -101,74 +272,130 @@ struct GenerationView: View {
         }
     }
 
-    private var settingsSection: some View {
-        HStack(spacing: 24) {
-            // Duration
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Duration", systemImage: "clock")
-                    .font(.headline)
-
-                Picker("Duration", selection: $selectedDuration) {
-                    ForEach(TrackDuration.allCases, id: \.self) { duration in
-                        Text(duration.displayName).tag(duration)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            // Model
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Model", systemImage: "cpu")
-                    .font(.headline)
-
-                Picker("Model", selection: $appState.selectedModel) {
-                    ForEach(ModelType.allCases, id: \.self) { model in
-                        Text(model.displayName).tag(model)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-        }
+    /// Durations available for current model
+    private var availableDurations: [TrackDuration] {
+        TrackDuration.available(for: appState.selectedModel)
     }
+
+    // MARK: - Generate Button
 
     private var generateButton: some View {
         Button(action: generate) {
-            HStack(spacing: 12) {
+            HStack(spacing: Spacing.sm) {
                 if appState.isGenerating {
                     ProgressView()
-                        .scaleEffect(0.8)
                         .progressViewStyle(.circular)
+                        .scaleEffect(0.8)
+                        .tint(.white)
+                } else if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.8)
+                        .tint(.white)
                 } else {
                     Image(systemName: "waveform")
+                        .font(.system(size: 18, weight: .semibold))
                 }
-                Text(appState.isGenerating ? "Generating..." : "Generate Music")
-                    .fontWeight(.semibold)
+
+                Text(buttonTitle)
+                    .font(Typography.headline)
             }
+            .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .frame(height: 56)
+            .background(
+                RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                    .fill(canGenerate ? Theme.accentGradient : LinearGradient(
+                        colors: [Theme.backgroundTertiary, Theme.backgroundTertiary],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ))
+            )
+            .opacity(canGenerate ? 1 : 0.6)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
+        .buttonStyle(.plain)
         .disabled(!canGenerate)
     }
 
+    // MARK: - Progress Section
+
     private var progressSection: some View {
-        VStack(spacing: 12) {
-            ProgressView(value: appState.generationProgress)
-                .progressViewStyle(.linear)
+        GlassCard {
+            VStack(spacing: Spacing.md) {
+                // Progress bar with animated gradient
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Theme.backgroundTertiary)
+                            .frame(height: 8)
 
-            Text(appState.generationStatus)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Theme.accentGradient)
+                            .frame(width: geometry.size.width * appState.generationProgress, height: 8)
+                            .animation(.easeInOut(duration: 0.3), value: appState.generationProgress)
+                    }
+                }
+                .frame(height: 8)
 
-            Button("Cancel") {
-                appState.cancelGeneration()
+                HStack {
+                    Text(appState.generationStatus)
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textSecondary)
+
+                    Spacer()
+
+                    Text("\(Int(appState.generationProgress * 100))%")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(Theme.textPrimary)
+                }
+
+                // Estimated time based on duration and model
+                HStack {
+                    Image(systemName: "clock")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textTertiary)
+
+                    Text(estimatedTimeText)
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textTertiary)
+
+                    Spacer()
+                }
+
+                ActionButton(title: "Cancel", icon: "xmark", variant: .outline, size: .small) {
+                    appState.cancelGeneration()
+                }
             }
-            .buttonStyle(.bordered)
         }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var estimatedTimeText: String {
+        guard let request = appState.currentRequest else {
+            return "Estimating..."
+        }
+
+        let estimate: String
+        if request.model.family == .acestep {
+            // ACE-Step is faster: ~26s for 1 min on M2 Max
+            switch request.duration {
+            case .short:     estimate = "10-15 seconds"
+            case .medium:    estimate = "20-30 seconds"
+            case .long:      estimate = "25-40 seconds"
+            case .extended:  estimate = "45-60 seconds"
+            case .maximum:   estimate = "1-2 minutes"
+            }
+        } else {
+            // MusicGen is slower: ~60s for 30s
+            switch request.duration {
+            case .short:   estimate = "1-2 minutes"
+            case .medium:  estimate = "5-10 minutes"
+            case .long:    estimate = "10-20 minutes"
+            default:       estimate = "Unknown"
+            }
+        }
+
+        let cpuNote = request.model.family == .acestep ? "" : " (MusicGen runs on CPU)"
+        return "Estimated time: \(estimate)\(cpuNote)"
     }
 
     // MARK: - Helpers
@@ -177,41 +404,271 @@ struct GenerationView: View {
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && appState.canGenerate
     }
 
+    private var buttonTitle: String {
+        if appState.isGenerating {
+            return "Generating..."
+        }
+        if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
+            return "Downloading Model..."
+        }
+        return "Generate Music"
+    }
+
     private func generate() {
+        let effectiveLyrics: String? = isInstrumental ? nil : (lyrics.isEmpty ? nil : lyrics)
+
         let request = GenerationRequest(
             prompt: prompt,
             duration: selectedDuration,
             model: appState.selectedModel,
-            genre: selectedGenre
+            genre: selectedGenre,
+            lyrics: effectiveLyrics,
+            qualityMode: selectedQualityMode
         )
         appState.startGeneration(request: request)
     }
+
+    private let randomPrompts = [
+        "Chill lo-fi beats with vinyl crackle and soft piano",
+        "Epic cinematic orchestral with rising strings",
+        "Ambient electronic with ethereal pads and gentle arpeggios",
+        "Upbeat electronic dance with driving bass and synth leads",
+        "Smooth jazz with saxophone and brushed drums",
+        "Atmospheric ambient with nature sounds and soft drones"
+    ]
 }
 
-struct GenreButton: View {
-    let preset: GenrePreset
+// MARK: - Mode Toggle Button
+
+struct ModeToggleButton: View {
+    let title: String
+    let icon: String
     let isSelected: Bool
+    var isDisabled: Bool = false
     let action: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: preset.icon)
-                    .font(.title2)
-                Text(preset.name)
-                    .font(.caption.weight(.medium))
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+
+                Text(title)
+                    .font(Typography.bodyMedium)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 70)
-            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: Spacing.radiusFull)
+                    .fill(isSelected ? Theme.accentPrimary.opacity(0.2) : Theme.backgroundTertiary.opacity(0.5))
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                RoundedRectangle(cornerRadius: Spacing.radiusFull)
+                    .strokeBorder(isSelected ? Theme.accentPrimary : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
+        .scaleEffect(isHovered && !isDisabled ? 1.02 : 1)
+        .opacity(isDisabled ? 0.5 : 1)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
+        .disabled(isDisabled)
+        .help(isDisabled ? "Only available with ACE-Step model" : "")
+    }
+
+    private var foregroundColor: Color {
+        if isDisabled {
+            return Theme.textTertiary
+        }
+        return isSelected ? Theme.textPrimary : Theme.textSecondary
+    }
+}
+
+// MARK: - Quick Action Button
+
+struct QuickActionButton: View {
+    let icon: String
+    let tooltip: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 36, height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(isHovered ? Theme.backgroundTertiary : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+// MARK: - Duration Chip
+
+struct DurationChip: View {
+    let duration: TrackDuration
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(duration.displayName)
+                .font(Typography.captionMedium)
+                .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                .padding(.horizontal, Spacing.sm)
+                .padding(.vertical, Spacing.xs)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(isSelected ? Theme.accentPrimary : Theme.backgroundTertiary)
+                )
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.05 : 1)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+// MARK: - Model Chip
+
+struct ModelChip: View {
+    let model: ModelType
+    let isSelected: Bool
+    let downloadState: ModelDownloadState
+    let action: () -> Void
+    let onDownload: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: {
+            if downloadState.isDownloaded {
+                action()
+            } else if case .notDownloaded = downloadState {
+                onDownload()
+            }
+        }) {
+            HStack(spacing: Spacing.xs) {
+                Text(model.displayName)
+                    .font(Typography.captionMedium)
+
+                switch downloadState {
+                case .notDownloaded:
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 12))
+                case .downloading(let progress):
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.5)
+                    Text("\(Int(progress * 100))%")
+                        .font(Typography.caption2)
+                case .downloaded:
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                case .error:
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.error)
+                }
+            }
+            .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(
+                RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                    .fill(isSelected ? Theme.accentPrimary : Theme.backgroundTertiary)
+            )
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.05 : 1)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+// MARK: - Quality Chip
+
+struct QualityChip: View {
+    let mode: QualityMode
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(mode.displayName)
+                .font(Typography.captionMedium)
+                .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                .padding(.horizontal, Spacing.sm)
+                .padding(.vertical, Spacing.xs)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(isSelected ? Theme.accentPrimary : Theme.backgroundTertiary)
+                )
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.05 : 1)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+// MARK: - Lyrics Tag Button
+
+struct LyricsTagButton: View {
+    let tag: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(tag)
+                .font(Typography.caption)
+                .foregroundStyle(Theme.accentPrimary)
+                .padding(.horizontal, Spacing.xs)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Theme.accentPrimary.opacity(0.1))
+                )
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.05 : 1)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
     }
 }
 

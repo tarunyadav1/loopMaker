@@ -1,6 +1,6 @@
 import Foundation
 
-/// Service to communicate with Python backend for MusicGen generation
+/// Service to communicate with Python backend for music generation
 @MainActor
 public final class PythonBackendService: ObservableObject {
     private let baseURL: URL
@@ -10,7 +10,7 @@ public final class PythonBackendService: ObservableObject {
         self.baseURL = baseURL
 
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 600 // 10 minutes for generation
+        config.timeoutIntervalForRequest = 900 // 15 minutes for longer ACE-Step generation
         self.session = URLSession(configuration: config)
     }
 
@@ -36,12 +36,22 @@ public final class PythonBackendService: ObservableObject {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "prompt": request.fullPrompt,
             "duration": request.duration.seconds,
-            "model": request.model.rawValue,
-            "seed": request.seed as Any
+            "model": request.model.rawValue
         ]
+
+        if let seed = request.seed {
+            body["seed"] = seed
+        }
+
+        // ACE-Step specific parameters
+        if request.model.supportsLyrics {
+            body["lyrics"] = request.effectiveLyrics ?? "[inst]"
+            body["quality_mode"] = request.qualityMode.rawValue
+            body["guidance_scale"] = request.guidanceScale
+        }
 
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -50,9 +60,17 @@ public final class PythonBackendService: ObservableObject {
         // Use streaming for progress updates
         let (data, response) = try await session.data(for: urlRequest)
 
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw PythonBackendError.generationFailed("Server returned error")
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PythonBackendError.invalidResponse
+        }
+
+        if httpResponse.statusCode != 200 {
+            // Try to parse error message from response
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw PythonBackendError.generationFailed(detail)
+            }
+            throw PythonBackendError.generationFailed("Server returned status \(httpResponse.statusCode)")
         }
 
         progressHandler(0.9, "Processing audio...")
@@ -73,7 +91,8 @@ public final class PythonBackendService: ObservableObject {
             prompt: request.prompt,
             duration: request.duration,
             model: request.model,
-            audioURL: audioURL
+            audioURL: audioURL,
+            lyrics: request.lyrics
         )
     }
 
@@ -104,10 +123,15 @@ public final class PythonBackendService: ObservableObject {
         var lastProgress = 0.0
         for try await line in bytes.lines {
             if let data = line.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let progress = json["progress"] as? Double {
-                lastProgress = progress
-                progressHandler(progress)
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let progress = json["progress"] as? Double {
+                    lastProgress = progress
+                    progressHandler(progress)
+                }
+                if let status = json["status"] as? String, status == "error",
+                   let error = json["error"] as? String {
+                    throw PythonBackendError.downloadFailed(error)
+                }
             }
         }
 
@@ -118,18 +142,61 @@ public final class PythonBackendService: ObservableObject {
 
     // MARK: - Model Status
 
-    /// Check which models are downloaded
+    /// Model status info from backend
+    public struct ModelStatus {
+        public let downloaded: Bool
+        public let loaded: Bool
+        public let family: String
+        public let sizeGB: Double
+        public let maxDuration: Int
+        public let supportsLyrics: Bool
+    }
+
+    /// Check which models are downloaded (simple bool for backwards compat)
     public func getModelStatus() async throws -> [ModelType: Bool] {
         let url = baseURL.appendingPathComponent("models/status")
         let (data, _) = try await session.data(from: url)
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Bool] else {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw PythonBackendError.invalidResponse
         }
 
         var status: [ModelType: Bool] = [:]
         for model in ModelType.allCases {
-            status[model] = json[model.rawValue] ?? false
+            if let modelData = json[model.rawValue] as? [String: Any] {
+                // New detailed format
+                status[model] = modelData["downloaded"] as? Bool ?? false
+            } else if let downloaded = json[model.rawValue] as? Bool {
+                // Old simple format (backwards compat)
+                status[model] = downloaded
+            } else {
+                status[model] = false
+            }
+        }
+        return status
+    }
+
+    /// Get detailed model status
+    public func getDetailedModelStatus() async throws -> [ModelType: ModelStatus] {
+        let url = baseURL.appendingPathComponent("models/status")
+        let (data, _) = try await session.data(from: url)
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw PythonBackendError.invalidResponse
+        }
+
+        var status: [ModelType: ModelStatus] = [:]
+        for model in ModelType.allCases {
+            if let modelData = json[model.rawValue] as? [String: Any] {
+                status[model] = ModelStatus(
+                    downloaded: modelData["downloaded"] as? Bool ?? false,
+                    loaded: modelData["loaded"] as? Bool ?? false,
+                    family: modelData["family"] as? String ?? "unknown",
+                    sizeGB: modelData["size_gb"] as? Double ?? 0,
+                    maxDuration: modelData["max_duration"] as? Int ?? 60,
+                    supportsLyrics: modelData["supports_lyrics"] as? Bool ?? false
+                )
+            }
         }
         return status
     }

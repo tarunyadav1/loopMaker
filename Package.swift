@@ -14,20 +14,11 @@ let package = Package(
             targets: ["LoopMaker"]
         ),
     ],
-    dependencies: [
-        // MLX Swift - Apple Silicon ML framework
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),
-    ],
+    dependencies: [],
     targets: [
         .executableTarget(
             name: "LoopMaker",
-            dependencies: [
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "MLXRandom", package: "mlx-swift"),
-                .product(name: "MLXFast", package: "mlx-swift"),
-                .product(name: "MLXFFT", package: "mlx-swift"),
-            ],
+            dependencies: [],
             path: "LoopMaker",
             exclude: ["Info.plist", "LoopMaker.entitlements", "Resources"]
         ),

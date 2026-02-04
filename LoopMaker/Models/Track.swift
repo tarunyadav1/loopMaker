@@ -9,6 +9,7 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
+
     public let id: UUID
     public let prompt: String
     public let duration: TrackDuration
@@ -17,6 +18,7 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
     public let createdAt: Date
     public var title: String?
     public var isFavorite: Bool
+    public var lyrics: String?
 
     public init(
         id: UUID = UUID(),
@@ -26,7 +28,8 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
         audioURL: URL,
         createdAt: Date = Date(),
         title: String? = nil,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        lyrics: String? = nil
     ) {
         self.id = id
         self.prompt = prompt
@@ -36,6 +39,7 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
         self.createdAt = createdAt
         self.title = title
         self.isFavorite = isFavorite
+        self.lyrics = lyrics
     }
 
     /// Display title - custom title or truncated prompt
@@ -55,5 +59,11 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: createdAt)
+    }
+
+    /// Whether this track has lyrics
+    public var hasLyrics: Bool {
+        guard let lyrics = lyrics else { return false }
+        return !lyrics.isEmpty && lyrics != "[inst]"
     }
 }

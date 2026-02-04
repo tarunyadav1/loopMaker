@@ -85,8 +85,31 @@ build-release:
 	@echo "$(GREEN)Building $(APP_NAME) (Release)...$(NC)"
 	@swift build -c release 2>&1 | xcbeautify || swift build -c release
 
-run: build
-	@echo "$(GREEN)Running $(APP_NAME)...$(NC)"
+# Build proper .app bundle (required for keyboard input to work on macOS)
+app: build
+	@echo "$(GREEN)Creating $(APP_NAME).app bundle...$(NC)"
+	@mkdir -p build/$(APP_NAME).app/Contents/MacOS
+	@mkdir -p build/$(APP_NAME).app/Contents/Resources/backend
+	@cp .build/debug/$(APP_NAME) build/$(APP_NAME).app/Contents/MacOS/
+	@cp LoopMaker/Info.plist build/$(APP_NAME).app/Contents/
+	@if [ -f LoopMaker/LoopMaker.entitlements ]; then cp LoopMaker/LoopMaker.entitlements build/$(APP_NAME).app/Contents/; fi
+	@# Copy backend files for auto-start
+	@cp backend/main.py build/$(APP_NAME).app/Contents/Resources/backend/
+	@cp backend/requirements.txt build/$(APP_NAME).app/Contents/Resources/backend/
+	@echo "$(GREEN)App bundle created at build/$(APP_NAME).app$(NC)"
+
+run: app
+	@echo "$(GREEN)Running $(APP_NAME).app...$(NC)"
+	@open build/$(APP_NAME).app
+
+# Run without rebuilding (faster iteration)
+run-fast:
+	@echo "$(GREEN)Running $(APP_NAME).app (no rebuild)...$(NC)"
+	@open build/$(APP_NAME).app
+
+# Legacy: run bare executable (keyboard input may not work)
+run-cli: build
+	@echo "$(YELLOW)Warning: Running as CLI - keyboard input may not work$(NC)"
 	@swift run $(APP_NAME)
 
 clean:
@@ -195,6 +218,46 @@ backend-setup:
 backend-test:
 	@echo "$(GREEN)Testing Python backend...$(NC)"
 	@cd backend && python -m pytest
+
+# =============================================================================
+# Python Bundling (for zero-config distribution)
+# =============================================================================
+
+PYTHON_VERSION = 3.11.8
+PYTHON_BUILD_DIR = build/python
+PYTHON_FRAMEWORK = $(PYTHON_BUILD_DIR)/Python.framework
+
+# Download standalone Python for bundling
+download-python:
+	@echo "$(GREEN)Downloading Python $(PYTHON_VERSION) standalone...$(NC)"
+	@mkdir -p $(PYTHON_BUILD_DIR)
+	@./scripts/download-python.sh $(PYTHON_VERSION) $(PYTHON_BUILD_DIR)
+	@echo "$(GREEN)Python downloaded to $(PYTHON_BUILD_DIR)$(NC)"
+
+# Build full .app bundle with bundled Python
+app-bundle: build download-python
+	@echo "$(GREEN)Creating $(APP_NAME).app bundle with bundled Python...$(NC)"
+	@mkdir -p build/$(APP_NAME).app/Contents/MacOS
+	@mkdir -p build/$(APP_NAME).app/Contents/Resources/backend
+	@mkdir -p build/$(APP_NAME).app/Contents/Frameworks
+	@# Copy executable
+	@cp .build/debug/$(APP_NAME) build/$(APP_NAME).app/Contents/MacOS/
+	@# Copy Info.plist
+	@cp LoopMaker/Info.plist build/$(APP_NAME).app/Contents/
+	@# Copy entitlements if exists
+	@if [ -f LoopMaker/LoopMaker.entitlements ]; then cp LoopMaker/LoopMaker.entitlements build/$(APP_NAME).app/Contents/; fi
+	@# Copy Python framework
+	@if [ -d "$(PYTHON_FRAMEWORK)" ]; then cp -R $(PYTHON_FRAMEWORK) build/$(APP_NAME).app/Contents/Frameworks/; fi
+	@# Copy backend files
+	@cp backend/main.py build/$(APP_NAME).app/Contents/Resources/backend/
+	@cp backend/requirements.txt build/$(APP_NAME).app/Contents/Resources/backend/
+	@echo "$(GREEN)App bundle with Python created at build/$(APP_NAME).app$(NC)"
+
+# Clean Python build artifacts
+clean-python:
+	@echo "$(YELLOW)Cleaning Python build artifacts...$(NC)"
+	@rm -rf $(PYTHON_BUILD_DIR)
+	@echo "$(GREEN)Python artifacts cleaned!$(NC)"
 
 # =============================================================================
 # Development Shortcuts

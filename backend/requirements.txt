@@ -5,9 +5,9 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
-# ML/AI
+# ML/AI - Pin transformers to 4.40.x for MusicGen compatibility
 torch>=2.1.0
-transformers>=4.36.0
+transformers>=4.40.0,<4.41.0
 accelerate>=0.25.0
 scipy>=1.11.0
 numpy>=1.24.0
@@ -23,3 +23,11 @@ python-dotenv>=1.0.0
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
+
+# ACE-Step music generation
+# Note: ACE-Step will be installed from GitHub when available
+# git+https://github.com/ace-step/ACE-Step.git
+einops>=0.7.0
+torchaudio>=2.1.0
+librosa>=0.10.0
+omegaconf>=2.3.0
