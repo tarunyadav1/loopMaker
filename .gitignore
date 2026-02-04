@@ -32,7 +32,12 @@ backend/*.pyc
 backend/.venv/
 backend/venv/
 backend/.env
-backend/models/
+backend/ml_models/
+
+# Scripts
+scripts/__pycache__/
+scripts/venv/
+scripts/*.pyc
 *.egg-info/
 dist/
 *.egg
@@ -88,7 +93,8 @@ htmlcov/
 *.pt
 *.pth
 *.onnx
-models/
+/models/
+**/ml_models/
 
 # Audio files (generated)
 *.wav
