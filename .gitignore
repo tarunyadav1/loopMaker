@@ -102,3 +102,8 @@ htmlcov/
 *.m4a
 *.aac
 !Resources/*.wav
+
+# AI/Agent tools
+.claude-flow/
+.claude/
+.mcp.json
