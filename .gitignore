@@ -1,0 +1,98 @@
+# Xcode
+.build/
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.xcscmblueprint
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+Packages/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Carthage
+Carthage/Build/
+Carthage/Checkouts/
+
+# Python Backend
+backend/__pycache__/
+backend/*.pyc
+backend/.venv/
+backend/venv/
+backend/.env
+backend/models/
+*.egg-info/
+dist/
+*.egg
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Test artifacts
+coverage/
+.coverage
+htmlcov/
+*.profraw
+*.profdata
+
+# Distribution
+*.dmg
+*.pkg
+*.app
+*.ipa
+*.zip
+
+# Model files (large)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+models/
+
+# Audio files (generated)
+*.wav
+*.mp3
+*.m4a
+*.aac
+!Resources/*.wav

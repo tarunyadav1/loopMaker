@@ -1,0 +1,64 @@
+disabled_rules:
+  - trailing_whitespace
+  - vertical_whitespace
+  - identifier_name
+  - type_body_length
+  - file_length
+
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - closure_spacing
+  - contains_over_filter_count
+  - contains_over_filter_is_empty
+  - contains_over_first_not_nil
+  - discouraged_object_literal
+  - empty_collection_literal
+  - first_where
+  - flatmap_over_map_reduce
+  - last_where
+  - legacy_multiple
+  - legacy_random
+  - reduce_boolean
+  - reduce_into
+  - toggle_bool
+  - unavailable_function
+  - unneeded_parentheses_in_closure_argument
+  - yoda_condition
+
+excluded:
+  - .build
+  - build
+  - DerivedData
+  - Packages
+  - .swiftpm
+  - backend
+
+line_length:
+  warning: 120
+  error: 150
+  ignores_function_declarations: true
+  ignores_comments: true
+  ignores_urls: true
+
+function_body_length:
+  warning: 50
+  error: 100
+
+type_name:
+  min_length: 2
+  max_length: 50
+
+nesting:
+  type_level: 3
+  function_level: 3
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25
+
+large_tuple:
+  warning: 4
+  error: 6
+
+reporter: "xcode"

@@ -1,0 +1,6 @@
+# Fastlane Appfile - LoopMaker
+# Configure these values for your team
+
+app_identifier(ENV["APP_IDENTIFIER"] || "com.loopmaker.LoopMaker")
+apple_id(ENV["APPLE_ID"] || "your@email.com")
+team_id(ENV["TEAM_ID"] || "YOUR_TEAM_ID")

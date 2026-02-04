@@ -1,0 +1,95 @@
+default_platform(:mac)
+
+platform :mac do
+
+  # ============================================
+  # Setup
+  # ============================================
+
+  desc "Install dependencies"
+  lane :setup do
+    sh("brew install swiftlint swiftformat xcbeautify")
+    sh("swift package resolve")
+  end
+
+  # ============================================
+  # Development
+  # ============================================
+
+  desc "Build the app (debug)"
+  lane :build do
+    sh("swift build -c debug")
+  end
+
+  desc "Build the app (release)"
+  lane :build_release do
+    sh("swift build -c release")
+  end
+
+  desc "Run tests"
+  lane :test do
+    sh("swift test")
+  end
+
+  desc "Run SwiftLint"
+  lane :lint do
+    sh("swiftlint lint --strict")
+  end
+
+  desc "Format code with SwiftFormat"
+  lane :format do
+    sh("swiftformat .")
+  end
+
+  desc "Run all quality checks"
+  lane :quality do
+    format
+    lint
+    test
+  end
+
+  # ============================================
+  # Release
+  # ============================================
+
+  desc "Create release archive"
+  lane :archive do
+    sh("swift build -c release")
+    sh("mkdir -p ../build/Release")
+    sh("cp ../.build/release/LoopMaker ../build/Release/")
+  end
+
+  desc "Full release: build, test, and archive"
+  lane :release do |options|
+    # Run tests first
+    test
+
+    # Build release
+    archive
+
+    # Create zip for distribution
+    sh("cd ../build/Release && zip -r LoopMaker.zip LoopMaker")
+
+    UI.success("Release created at build/Release/LoopMaker.zip")
+  end
+
+  # ============================================
+  # Utilities
+  # ============================================
+
+  desc "Clean build artifacts"
+  lane :clean do
+    sh("swift package clean")
+    sh("rm -rf ../build")
+    sh("rm -rf ../.build")
+  end
+
+  # ============================================
+  # Error Handling
+  # ============================================
+
+  error do |lane, exception|
+    UI.error("Error in lane #{lane}: #{exception.message}")
+  end
+
+end

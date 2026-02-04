@@ -1,0 +1,39 @@
+# SwiftFormat Configuration for LoopMaker
+
+# File Options
+--exclude .build,build,DerivedData,Packages,.swiftpm
+
+# Format Options
+--swiftversion 6.0
+--indent 4
+--indentcase false
+--trimwhitespace always
+--stripunusedargs closure-only
+--maxwidth 120
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--closingparen balanced
+--funcattributes prev-line
+--typeattributes prev-line
+--varattributes prev-line
+--extensionacl on-declarations
+--patternlet hoist
+--self remove
+--importgrouping testable-bottom
+--semicolons never
+--commas always
+--decimalgrouping 3
+--binarygrouping 4,8
+--octalgrouping 4,8
+--hexgrouping 4,8
+--fractiongrouping disabled
+--exponentgrouping disabled
+--hexliteralcase uppercase
+--exponentcase lowercase
+--emptybraces no-space
+--ifdef no-indent
+--linebreaks lf
+--xcodeindentation disabled
+--header strip
+--conflictmarkers reject
