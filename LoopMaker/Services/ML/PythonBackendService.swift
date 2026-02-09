@@ -6,7 +6,7 @@ public final class PythonBackendService: ObservableObject {
     private let baseURL: URL
     private let session: URLSession
 
-    public init(baseURL: URL = URL(string: "http://localhost:8000")!) {
+    public init(baseURL: URL = URL(string: "http://127.0.0.1:8000")!) {
         self.baseURL = baseURL
 
         let config = URLSessionConfiguration.default
@@ -25,75 +25,119 @@ public final class PythonBackendService: ObservableObject {
 
     // MARK: - Generation
 
-    /// Generate music using Python backend
+    /// Generate music using Python backend via WebSocket for real-time progress
     public func generate(
         request: GenerationRequest,
         progressHandler: @escaping (Double, String) -> Void
     ) async throws -> Track {
-        let url = baseURL.appendingPathComponent("generate")
+        // Build WebSocket URL from base HTTP URL
+        let wsScheme = baseURL.scheme == "https" ? "wss" : "ws"
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw PythonBackendError.invalidResponse
+        }
+        components.scheme = wsScheme
+        components.path += "/ws/generate"
 
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard let wsURL = components.url else {
+            throw PythonBackendError.invalidResponse
+        }
 
+        var wsRequest = URLRequest(url: wsURL)
+        wsRequest.setValue(baseURL.absoluteString, forHTTPHeaderField: "Origin")
+        let wsTask = session.webSocketTask(with: wsRequest)
+        wsTask.resume()
+        defer { wsTask.cancel(with: .normalClosure, reason: nil) }
+
+        // Build and send generation request as JSON
         var body: [String: Any] = [
             "prompt": request.fullPrompt,
             "duration": request.duration.seconds,
-            "model": request.model.rawValue
+            "model": request.model.rawValue,
         ]
 
         if let seed = request.seed {
             body["seed"] = seed
         }
 
-        // ACE-Step specific parameters
         if request.model.supportsLyrics {
             body["lyrics"] = request.effectiveLyrics ?? "[inst]"
             body["quality_mode"] = request.qualityMode.rawValue
             body["guidance_scale"] = request.guidanceScale
         }
 
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let requestData = try JSONSerialization.data(withJSONObject: body)
+        let requestString = String(data: requestData, encoding: .utf8)!
+        try await wsTask.send(.string(requestString))
 
-        progressHandler(0.1, "Sending request to backend...")
+        progressHandler(0.01, "Connected to backend...")
 
-        // Use streaming for progress updates
-        let (data, response) = try await session.data(for: urlRequest)
+        // Receive messages until complete or error
+        while true {
+            let message = try await wsTask.receive()
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw PythonBackendError.invalidResponse
-        }
-
-        if httpResponse.statusCode != 200 {
-            // Try to parse error message from response
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let detail = json["detail"] as? String {
-                throw PythonBackendError.generationFailed(detail)
+            guard let json = Self.parseWebSocketMessage(message) else {
+                continue
             }
-            throw PythonBackendError.generationFailed("Server returned status \(httpResponse.statusCode)")
+
+            guard let type = json["type"] as? String else {
+                continue
+            }
+
+            switch type {
+            case "progress":
+                let progress = json["progress"] as? Double ?? 0
+                let status = json["message"] as? String ?? "Processing..."
+                progressHandler(progress, status)
+
+            case "heartbeat":
+                // Keep-alive, ignore
+                break
+
+            case "complete":
+                guard let audioPath = json["audio_path"] as? String else {
+                    throw PythonBackendError.invalidResponse
+                }
+
+                let fileURL = URL(fileURLWithPath: audioPath)
+                guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                    throw PythonBackendError.generationFailed("Audio file not found at \(audioPath)")
+                }
+
+                progressHandler(1.0, "Complete!")
+
+                return Track(
+                    prompt: request.prompt,
+                    duration: request.duration,
+                    model: request.model,
+                    audioURL: fileURL,
+                    lyrics: request.lyrics
+                )
+
+            case "error":
+                let detail = json["detail"] as? String ?? "Unknown error"
+                throw PythonBackendError.generationFailed(detail)
+
+            default:
+                break
+            }
         }
+    }
 
-        progressHandler(0.9, "Processing audio...")
-
-        // Parse response
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let audioBase64 = json["audio"] as? String,
-              let audioData = Data(base64Encoded: audioBase64) else {
-            throw PythonBackendError.invalidResponse
+    /// Parse a WebSocket message into a JSON dictionary
+    private nonisolated static func parseWebSocketMessage(
+        _ message: URLSessionWebSocketTask.Message
+    ) -> [String: Any]? {
+        let data: Data
+        switch message {
+        case .string(let text):
+            guard let d = text.data(using: .utf8) else { return nil }
+            data = d
+        case .data(let d):
+            data = d
+        @unknown default:
+            return nil
         }
-
-        // Save audio to file
-        let audioURL = try saveAudio(data: audioData)
-
-        progressHandler(1.0, "Complete!")
-
-        return Track(
-            prompt: request.prompt,
-            duration: request.duration,
-            model: request.model,
-            audioURL: audioURL,
-            lyrics: request.lyrics
-        )
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // MARK: - Model Download
@@ -201,20 +245,6 @@ public final class PythonBackendService: ObservableObject {
         return status
     }
 
-    // MARK: - Helpers
-
-    private func saveAudio(data: Data) throws -> URL {
-        let documentsURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let loopMakerURL = documentsURL.appendingPathComponent("LoopMaker/tracks", isDirectory: true)
-
-        try FileManager.default.createDirectory(at: loopMakerURL, withIntermediateDirectories: true)
-
-        let filename = "\(UUID().uuidString).wav"
-        let fileURL = loopMakerURL.appendingPathComponent(filename)
-
-        try data.write(to: fileURL)
-        return fileURL
-    }
 }
 
 // MARK: - Errors

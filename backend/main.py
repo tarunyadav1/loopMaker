@@ -1,41 +1,74 @@
 """
 LoopMaker Python Backend
-FastAPI server for MusicGen and ACE-Step audio generation
+FastAPI server for MusicGen and ACE-Step v1.5 audio generation
 """
 
 import asyncio
-import base64
-import io
+import json
 import os
 import platform
+import queue
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+# Must set MPS fallback BEFORE importing torch — enables CPU fallback for
+# Metal shader ops that crash (e.g. masked_fill_scalar_strided_32bit).
+if platform.system() == "Darwin":
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException
+
+# Note: PyTorch 2.10's MPS backend has multiple buggy Metal shaders
+# (masked_fill_scalar_strided_32bit, mul_dense_scalar_float_float) that crash
+# with fatal Metal validation assertions. The DiT model is forced to CPU to
+# avoid these. The LM uses MLX (native Apple Silicon) so it's still fast.
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from transformers import AutoProcessor, MusicgenForConditionalGeneration
 import scipy.io.wavfile as wavfile
 
 app = FastAPI(
     title="LoopMaker Backend",
-    description="AI Music Generation API powered by MusicGen and ACE-Step",
-    version="1.1.0"
+    description="AI Music Generation API powered by MusicGen and ACE-Step v1.5",
+    version="2.0.0"
 )
 
 # CORS for Swift app communication
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# MARK: - MPS Memory Management
+
+def _setup_mps_environment():
+    """Configure MPS environment for Apple Silicon Macs.
+
+    Note: PYTORCH_ENABLE_MPS_FALLBACK is set before `import torch` at module
+    level (must be set before torch initializes the MPS backend).
+    PYTORCH_MPS_HIGH_WATERMARK_RATIO is intentionally NOT set — PyTorch 2.10+
+    computes low=2*high, so custom values cause "invalid low watermark ratio".
+    """
+    pass
+
+
+_setup_mps_environment()
+
+
+def _clear_mps_cache():
+    """Clear MPS memory cache if available."""
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
 
 
 # MARK: - Model Registry
@@ -58,7 +91,7 @@ class ModelInfo:
 MODEL_REGISTRY = {
     "small": ModelInfo("facebook/musicgen-small", ModelFamily.MUSICGEN, 1.2, 8, 60, False),
     "medium": ModelInfo("facebook/musicgen-medium", ModelFamily.MUSICGEN, 6.0, 16, 60, False),
-    "acestep": ModelInfo("ACE-Step/ACE-Step-v1-3.5B", ModelFamily.ACESTEP, 7.0, 16, 240, True),
+    "acestep": ModelInfo("ACE-Step/acestep-v15-turbo", ModelFamily.ACESTEP, 5.0, 8, 240, True),
 }
 
 # Backwards compatibility
@@ -67,13 +100,20 @@ MODEL_NAMES = {k: v.hf_name for k, v in MODEL_REGISTRY.items() if v.family == Mo
 
 # MARK: - Model Caches
 
-models: dict = {}
-processors: dict = {}
-acestep_pipelines: dict = {}
+models: dict = {}          # MusicGen MLX models
+
+# ACE-Step v1.5 handlers (separate DiT + LM architecture)
+_acestep_dit_handler = None
+_acestep_llm_handler = None
+_acestep_initialized = False
 
 # Configuration
 MODEL_CACHE_DIR = Path.home() / ".cache" / "loopmaker" / "models"
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Shared output directory (must match Swift's track storage path)
+TRACKS_DIR = Path.home() / "Library" / "Application Support" / "LoopMaker" / "tracks"
+TRACKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # MARK: - Request/Response Models
@@ -85,12 +125,12 @@ class GenerationRequest(BaseModel):
     seed: Optional[int] = None
     # ACE-Step specific
     lyrics: Optional[str] = None
-    quality_mode: str = "fast"  # "fast" (27 steps) or "quality" (60 steps)
-    guidance_scale: float = 15.0
+    quality_mode: str = "fast"  # "draft" (4 steps), "fast" (8 steps), or "quality" (50 steps)
+    guidance_scale: float = 7.0  # v1.5 default (was 15.0 in v1)
 
 
 class GenerationResponse(BaseModel):
-    audio: str  # base64 encoded WAV
+    audio_path: str  # path to generated WAV file
     sample_rate: int
     duration: float
 
@@ -102,7 +142,7 @@ class DownloadRequest(BaseModel):
 # MARK: - Device Detection
 
 def get_device() -> str:
-    """Detect optimal device for inference."""
+    """Detect optimal device for inference (ACE-Step uses PyTorch, MusicGen uses MLX/Metal)."""
     if torch.cuda.is_available():
         return "cuda"
     elif torch.backends.mps.is_available():
@@ -113,52 +153,147 @@ def get_device() -> str:
 # MARK: - Model Loaders
 
 def load_musicgen_model(model_name: str):
-    """Load MusicGen model if not already loaded."""
+    """Load MusicGen model via MLX if not already loaded."""
     if model_name not in models:
+        from mlx_musicgen import MusicGen
+
         hf_name = MODEL_NAMES.get(model_name)
         if not hf_name:
             raise ValueError(f"Unknown MusicGen model: {model_name}")
 
-        print(f"Loading MusicGen model: {hf_name}")
-        models[model_name] = MusicgenForConditionalGeneration.from_pretrained(hf_name)
-        processors[model_name] = AutoProcessor.from_pretrained(hf_name)
+        print(f"Loading MusicGen MLX model: {hf_name}")
+        models[model_name] = MusicGen.from_pretrained(hf_name)
 
-    return models[model_name], processors[model_name]
+    return models[model_name]
 
 
-def load_acestep_model(model_name: str):
-    """Load ACE-Step model with Mac-specific configuration."""
-    if model_name not in acestep_pipelines:
-        model_info = MODEL_REGISTRY.get(model_name)
-        if not model_info or model_info.family != ModelFamily.ACESTEP:
-            raise ValueError(f"Unknown ACE-Step model: {model_name}")
+def _ensure_acestep_weights_downloaded():
+    """Ensure ACE-Step model weights are actually downloaded.
 
-        print(f"Loading ACE-Step model: {model_info.hf_name}")
+    The pip install of ACE-Step v1.5 creates the checkpoints/ directory structure
+    with config files but NOT the large model weight files (Git LFS).
+    The handler's check_main_model_exists() only checks directory existence,
+    so it gets fooled. We explicitly check for weight files and download if missing.
+    """
+    import acestep
+    from acestep.model_downloader import (
+        download_main_model,
+        download_submodel,
+        check_model_exists,
+    )
 
-        try:
-            from acestep.pipeline_ace_step import ACEStepPipeline
-        except ImportError:
-            raise ImportError(
-                "ACE-Step not installed. Install with: "
-                "pip install git+https://github.com/ace-step/ACE-Step.git"
-            )
+    # The handler's _get_project_root() returns parent of acestep package dir
+    project_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(acestep.__file__))))
+    checkpoint_dir = project_root / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        is_mac = platform.system() == "Darwin"
-
-        # Use float32 on Mac (bf16 not fully supported), bfloat16 on CUDA
-        dtype = "float32" if is_mac else "bfloat16"
-
-        # ACEStepPipeline downloads model automatically when checkpoint_dir=None
-        # Use quantized version for smaller memory footprint
-        acestep_pipelines[model_name] = ACEStepPipeline(
-            checkpoint_dir=None,  # Will download from HuggingFace
-            dtype=dtype,
-            device_id=0,
-            cpu_offload=is_mac,  # Enable CPU offload on Mac to save memory
-            quantized=False,  # Use full precision for better quality
+    # Check for actual model weight files (not just directory existence).
+    # Weight files can be model.safetensors, pytorch_model.bin, or sharded variants.
+    def _has_weight_files(model_dir: Path) -> bool:
+        if not model_dir.exists():
+            return False
+        return (
+            any(model_dir.glob("model*.safetensors"))
+            or any(model_dir.glob("pytorch_model*.bin"))
         )
 
-    return acestep_pipelines[model_name]
+    dit_dir = checkpoint_dir / "acestep-v15-turbo"
+    qwen_dir = checkpoint_dir / "Qwen3-Embedding-0.6B"
+
+    if not _has_weight_files(dit_dir) or not _has_weight_files(qwen_dir):
+        print("ACE-Step model weights not found — downloading from HuggingFace...")
+        print(f"Destination: {checkpoint_dir}")
+        print("This may take 5-30 minutes depending on your connection (~5GB)...")
+        success, msg = download_main_model(checkpoint_dir, force=True)
+        if not success:
+            raise RuntimeError(f"Failed to download ACE-Step main model: {msg}")
+        print(f"Main model download: {msg}")
+
+    # Download 0.6B LM separately (not included in main model, which has 1.7B)
+    lm_dir = checkpoint_dir / "acestep-5Hz-lm-0.6B"
+    if not _has_weight_files(lm_dir):
+        print("Downloading ACE-Step 0.6B LM model...")
+        success, msg = download_submodel("acestep-5Hz-lm-0.6B", checkpoint_dir)
+        if not success:
+            print(f"WARNING: Failed to download 0.6B LM: {msg}")
+            print("Generation will work without prompt enhancement.")
+        else:
+            print(f"LM download: {msg}")
+
+    return str(checkpoint_dir)
+
+
+def load_acestep_model():
+    """Load ACE-Step v1.5 model with Mac-specific configuration.
+
+    v1.5 uses a two-handler architecture:
+    - AceStepHandler (DiT): The audio generation model (~2B params)
+    - LLMHandler (LM): Optional language model for prompt enhancement (0.6B-4B)
+    """
+    global _acestep_dit_handler, _acestep_llm_handler, _acestep_initialized
+
+    if _acestep_initialized:
+        return _acestep_dit_handler, _acestep_llm_handler
+
+    try:
+        from acestep.handler import AceStepHandler
+        from acestep.llm_inference import LLMHandler
+    except ImportError:
+        raise ImportError(
+            "ACE-Step v1.5 not installed. Install with: "
+            "pip install git+https://github.com/ace-step/ACE-Step-1.5.git"
+        )
+
+    is_mac = platform.system() == "Darwin"
+
+    # Clear memory before loading
+    _clear_mps_cache()
+
+    # Ensure model weights are actually downloaded (pip install only gets configs)
+    checkpoint_dir = _ensure_acestep_weights_downloaded()
+
+    # On Mac, force CPU for DiT inference. PyTorch 2.10's MPS backend has
+    # multiple buggy Metal shaders (masked_fill_scalar_strided_32bit,
+    # mul_dense_scalar_float_float) that crash with fatal Metal validation
+    # assertions. CPU is slower but reliable. The LM uses MLX (native Apple
+    # Silicon) so it's still fast. Can revisit when PyTorch fixes MPS shaders.
+    dit_device = "cpu" if is_mac else "auto"
+
+    print(f"Loading ACE-Step v1.5 DiT model (acestep-v15-turbo) on {dit_device}...")
+    _acestep_dit_handler = AceStepHandler()
+    status_msg, ready = _acestep_dit_handler.initialize_service(
+        project_root="",  # Handler auto-detects via _get_project_root()
+        config_path="acestep-v15-turbo",
+        device=dit_device,
+        use_flash_attention=False,
+        compile_model=False,
+        offload_to_cpu=False,  # Already on CPU, no need to offload
+        offload_dit_to_cpu=False,
+    )
+    print(f"DiT status: {status_msg}")
+
+    if not ready:
+        raise RuntimeError(f"Failed to initialize ACE-Step DiT: {status_msg}")
+
+    # Load 0.6B LM for prompt enhancement (smallest variant for 16GB Macs)
+    print("Loading ACE-Step v1.5 LM (0.6B)...")
+    _acestep_llm_handler = LLMHandler()
+    lm_status, lm_ready = _acestep_llm_handler.initialize(
+        checkpoint_dir=checkpoint_dir,  # Must point to actual checkpoints dir
+        lm_model_path="acestep-5Hz-lm-0.6B",
+        backend="mlx" if is_mac else "pt",  # MLX for native Apple Silicon acceleration
+        device="auto",
+        offload_to_cpu=is_mac,
+    )
+    print(f"LM status: {lm_status}")
+
+    if not lm_ready:
+        # LM is optional — generation works without it, just less refined prompts
+        print("WARNING: LM failed to load, generation will work without prompt enhancement")
+        _acestep_llm_handler = None
+
+    _acestep_initialized = True
+    return _acestep_dit_handler, _acestep_llm_handler
 
 
 # MARK: - Health Endpoint
@@ -168,7 +303,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "models_loaded": list(models.keys()) + list(acestep_pipelines.keys()),
+        "models_loaded": list(models.keys()) + (["acestep"] if _acestep_initialized else []),
         "device": get_device()
     }
 
@@ -181,7 +316,7 @@ async def get_model_status():
     status = {}
     for name, info in MODEL_REGISTRY.items():
         cache_path = MODEL_CACHE_DIR / name
-        is_loaded = name in models or name in acestep_pipelines
+        is_loaded = name in models or (name == "acestep" and _acestep_initialized)
 
         status[name] = {
             "downloaded": cache_path.exists() or is_loaded,
@@ -209,31 +344,63 @@ async def download_model(request: DownloadRequest):
             yield f'{{"status": "downloading", "progress": 0.1}}\n'
 
             if model_info.family == ModelFamily.MUSICGEN:
-                # Download MusicGen
-                hf_name = model_info.hf_name
-                processor = AutoProcessor.from_pretrained(hf_name)
-                yield f'{{"status": "downloading", "progress": 0.3}}\n'
+                # Download and load MusicGen via MLX — run in thread to avoid blocking
+                yield f'{{"status": "downloading", "progress": 0.2, "message": "Downloading MusicGen model..."}}\n'
 
-                model = MusicgenForConditionalGeneration.from_pretrained(hf_name)
+                loop = asyncio.get_event_loop()
+                load_future = loop.run_in_executor(
+                    _executor,
+                    lambda: load_musicgen_model(request.model),
+                )
+
+                # Send keepalive progress while download runs
+                tick = 0
+                while not load_future.done():
+                    await asyncio.sleep(3)
+                    tick += 1
+                    # Slowly ramp progress from 0.2 to 0.75 during download
+                    progress = min(0.2 + tick * 0.02, 0.75)
+                    yield f'{{"status": "downloading", "progress": {progress:.2f}, "message": "Downloading MusicGen model..."}}\n'
+
+                # Raise any exceptions from the thread
+                load_future.result()
                 yield f'{{"status": "downloading", "progress": 0.8}}\n'
 
-                models[request.model] = model
-                processors[request.model] = processor
-
             elif model_info.family == ModelFamily.ACESTEP:
-                # Download ACE-Step
-                yield f'{{"status": "downloading", "progress": 0.2}}\n'
+                # Download ACE-Step v1.5 — run in thread to avoid blocking event loop
+                yield f'{{"status": "downloading", "progress": 0.15, "message": "Initializing ACE-Step v1.5 download..."}}\n'
+
+                loop = asyncio.get_event_loop()
+                load_future = loop.run_in_executor(
+                    _executor,
+                    load_acestep_model,
+                )
+
+                # Send keepalive progress updates every 5 seconds while model downloads
+                # ACE-Step downloads ~5GB (28 files) which can take 5-30 minutes
+                tick = 0
+                while not load_future.done():
+                    await asyncio.sleep(5)
+                    tick += 1
+                    # Slowly ramp progress from 0.15 to 0.75 over ~30 minutes (360 ticks)
+                    progress = min(0.15 + tick * 0.005, 0.75)
+                    elapsed_min = tick * 5 / 60
+                    yield f'{{"status": "downloading", "progress": {progress:.3f}, "message": "Downloading ACE-Step v1.5 model ({elapsed_min:.1f} min elapsed)..."}}\n'
+
+                # Check for errors from the thread
                 try:
-                    pipeline = load_acestep_model(request.model)
-                    yield f'{{"status": "downloading", "progress": 0.8}}\n'
+                    load_future.result()
                 except ImportError as e:
                     yield f'{{"status": "error", "error": "{str(e)}"}}\n'
                     return
 
+                yield f'{{"status": "downloading", "progress": 0.85, "message": "Model loaded successfully"}}\n'
+
             yield f'{{"status": "complete", "progress": 1.0}}\n'
 
         except Exception as e:
-            yield f'{{"status": "error", "error": "{str(e)}"}}\n'
+            error_msg = str(e).replace('"', '\\"').replace('\n', ' ')
+            yield f'{{"status": "error", "error": "{error_msg}"}}\n'
 
     return StreamingResponse(
         stream_progress(),
@@ -257,153 +424,412 @@ async def generate_music(request: GenerationRequest):
         )
 
     if model_info.family == ModelFamily.MUSICGEN:
-        return await generate_musicgen(request)
+        return await generate_musicgen_http(request)
     else:
-        return await generate_acestep(request)
+        return await generate_acestep_http(request)
 
 
-async def generate_musicgen(request: GenerationRequest) -> GenerationResponse:
-    """Generate music using MusicGen model."""
+ProgressCallback = Callable[[float, str], None]
+
+_executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _generate_musicgen_sync(
+    request: GenerationRequest,
+    progress_cb: ProgressCallback,
+) -> GenerationResponse:
+    """Synchronous MusicGen generation via MLX with progress callbacks.
+
+    For durations > 30s, uses chunked generation with overlap-add crossfade
+    to maintain quality within MusicGen's ~1500-token context window.
+    """
+    import mlx.core as mx
+
+    progress_cb(0.05, "Loading model...")
+    model = load_musicgen_model(request.model)
+
+    # Set seed for reproducibility
+    if request.seed is not None:
+        mx.random.seed(request.seed)
+        np.random.seed(request.seed)
+
+    # ~50 steps per second of audio
+    STEPS_PER_SEC = 50
+    max_steps = int(request.duration * STEPS_PER_SEC)
+    chunk_steps = 1500  # 30s - MusicGen's coherent context window
+
+    sample_rate = model.sampling_rate
+
+    if max_steps <= chunk_steps:
+        # --- Single chunk: simple generation ---
+        progress_cb(0.15, "Generating audio (MLX)...")
+
+        def step_progress(step: int, total: int):
+            frac = step / total
+            mapped = 0.15 + frac * 0.70
+            secs_done = step / STEPS_PER_SEC
+            secs_total = total / STEPS_PER_SEC
+            progress_cb(mapped, f"Generating audio... {secs_done:.0f}s / {secs_total:.0f}s")
+
+        audio = model.generate(
+            request.prompt,
+            max_steps=max_steps,
+            top_k=250,
+            temp=1.0,
+            guidance_coef=3.0,
+            progress_callback=step_progress,
+        )
+        audio_data = np.array(audio).flatten()
+
+    else:
+        # --- Multi-chunk: overlap-add crossfade ---
+        overlap_secs = 5
+        overlap_steps = overlap_secs * STEPS_PER_SEC  # 250 steps
+        overlap_samples = overlap_secs * sample_rate
+
+        # Plan chunks: first = full 30s, subsequent = 30s with 5s overlap
+        new_steps_per_chunk = chunk_steps - overlap_steps  # 1250 = 25s of new audio
+        extra_steps = max_steps - chunk_steps
+        num_extra = max(1, -(-extra_steps // new_steps_per_chunk))  # ceil division
+        total_chunks = 1 + num_extra
+
+        progress_cb(0.15, f"Generating in {total_chunks} chunks with crossfade...")
+        waveforms = []
+        global_steps_done = 0
+
+        for chunk_idx in range(total_chunks):
+            # Determine steps for this chunk
+            if chunk_idx == 0:
+                steps = chunk_steps
+            else:
+                remaining = max_steps - global_steps_done
+                # Generate a full chunk (30s) but only overlap_steps overlap with prev
+                steps = min(chunk_steps, remaining + overlap_steps)
+
+            def make_progress(ci=chunk_idx, tc=total_chunks, gsd=global_steps_done):
+                def _progress(step: int, total: int):
+                    overall = (gsd + step) / max_steps
+                    mapped = 0.15 + min(overall, 1.0) * 0.70
+                    secs = step / STEPS_PER_SEC
+                    progress_cb(mapped, f"Chunk {ci + 1}/{tc}: {secs:.0f}s / {total / STEPS_PER_SEC:.0f}s")
+                return _progress
+
+            chunk_audio = model.generate(
+                request.prompt,
+                max_steps=steps,
+                top_k=250,
+                temp=1.0,
+                guidance_coef=3.0,
+                progress_callback=make_progress(),
+            )
+            waveforms.append(np.array(chunk_audio).flatten())
+
+            if chunk_idx == 0:
+                global_steps_done += steps
+            else:
+                global_steps_done += steps - overlap_steps
+
+        # Crossfade overlapping regions
+        progress_cb(0.87, "Crossfading chunks...")
+        audio_data = waveforms[0]
+        for w in waveforms[1:]:
+            xfade_len = min(overlap_samples, len(audio_data), len(w))
+            fade_out = np.linspace(1.0, 0.0, xfade_len, dtype=np.float32)
+            fade_in = np.linspace(0.0, 1.0, xfade_len, dtype=np.float32)
+            tail = audio_data[-xfade_len:].astype(np.float32)
+            head = w[:xfade_len].astype(np.float32)
+            crossfaded = tail * fade_out + head * fade_in
+            audio_data = np.concatenate([audio_data[:-xfade_len], crossfaded, w[xfade_len:]])
+
+    progress_cb(0.90, "Processing audio...")
+
+    # Normalize audio
+    max_val = np.max(np.abs(audio_data))
+    if max_val > 0:
+        audio_data = audio_data / max_val * 0.95
+
+    # Convert to int16 for WAV
+    audio_int16 = (audio_data * 32767).astype(np.int16)
+
+    # Write WAV directly to shared tracks directory
+    output_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
+    wavfile.write(str(output_path), sample_rate, audio_int16)
+
+    return GenerationResponse(
+        audio_path=str(output_path),
+        sample_rate=sample_rate,
+        duration=len(audio_data) / sample_rate,
+    )
+
+
+def _generate_acestep_sync(
+    request: GenerationRequest,
+    progress_cb: ProgressCallback,
+) -> GenerationResponse:
+    """Synchronous ACE-Step v1.5 generation with progress callbacks.
+
+    Uses the two-handler architecture:
+    - AceStepHandler (DiT) for audio generation
+    - LLMHandler (LM) for optional prompt enhancement
+    """
+    import tempfile
+
+    # Clear MPS cache before generation
+    _clear_mps_cache()
+
+    progress_cb(0.05, "Loading ACE-Step v1.5 model...")
+    dit_handler, llm_handler = load_acestep_model()
+
     try:
-        model, processor = load_musicgen_model(request.model)
-
-        # Set seed for reproducibility
-        if request.seed is not None:
-            torch.manual_seed(request.seed)
-            np.random.seed(request.seed)
-
-        # Prepare inputs
-        inputs = processor(
-            text=[request.prompt],
-            padding=True,
-            return_tensors="pt",
+        from acestep.inference import generate_music as ace_generate, GenerationParams, GenerationConfig
+    except ImportError:
+        raise ImportError(
+            "ACE-Step v1.5 not installed. Install with: "
+            "pip install git+https://github.com/ace-step/ACE-Step-1.5.git"
         )
 
-        # Calculate max new tokens based on duration
-        # MusicGen generates at ~50 tokens per second
-        sample_rate = model.config.audio_encoder.sampling_rate
-        tokens_per_second = model.config.audio_encoder.frame_rate
-        max_new_tokens = int(request.duration * tokens_per_second)
+    # Quality mode determines inference steps and method
+    if request.quality_mode == "draft":
+        infer_steps = 4
+    elif request.quality_mode == "quality":
+        infer_steps = 50
+    else:  # "fast" (default)
+        infer_steps = 8
 
-        # Generate audio
-        with torch.no_grad():
-            audio_values = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-            )
+    # Default to instrumental if no lyrics provided
+    lyrics = request.lyrics if request.lyrics else "[inst]"
+    is_instrumental = lyrics == "[inst]"
 
-        # Convert to numpy
-        audio_data = audio_values[0, 0].cpu().numpy()
+    # Determine if thinking (LM enhancement) should be enabled
+    use_thinking = llm_handler is not None
+
+    progress_cb(0.10, "Preparing generation parameters...")
+
+    # Set up v1.5 generation parameters
+    params = GenerationParams(
+        task_type="text2music",
+        caption=request.prompt,
+        lyrics=lyrics,
+        instrumental=is_instrumental,
+        duration=float(request.duration),
+        inference_steps=infer_steps,
+        seed=request.seed if request.seed is not None else -1,  # -1 = random
+        guidance_scale=request.guidance_scale,
+        shift=1.0,  # Default for turbo models
+        infer_method="ode",
+        thinking=use_thinking,
+        lm_temperature=0.85,
+        lm_cfg_scale=2.0,
+        use_cot_metas=use_thinking,
+        use_cot_caption=use_thinking,
+        use_cot_language=use_thinking,
+    )
+
+    config = GenerationConfig(
+        batch_size=1,
+        allow_lm_batch=False,
+        use_random_seed=(request.seed is None),
+        audio_format="wav",
+    )
+
+    # Create temp directory for output
+    temp_dir = tempfile.mkdtemp(prefix="loopmaker_")
+
+    try:
+        progress_cb(0.15, "Generating audio (ACE-Step v1.5)...")
+
+        # Run generation
+        result = ace_generate(
+            dit_handler=dit_handler,
+            llm_handler=llm_handler,
+            params=params,
+            config=config,
+            save_dir=temp_dir,
+        )
+
+        if not result.success:
+            raise RuntimeError(f"ACE-Step generation failed: {result.status_message}")
+
+        progress_cb(0.85, "Processing audio...")
+
+        # Find the generated audio file
+        generated_files = list(Path(temp_dir).glob("*.wav"))
+        if not generated_files:
+            # Try other formats
+            generated_files = list(Path(temp_dir).glob("*.flac")) + list(Path(temp_dir).glob("*.mp3"))
+
+        if not generated_files:
+            raise RuntimeError("ACE-Step generated no audio files")
+
+        # Read the first generated file
+        temp_audio_path = str(generated_files[0])
+        sample_rate, audio_data = wavfile.read(temp_audio_path)
+
+        # Convert to float for normalization
+        if audio_data.dtype == np.int16:
+            audio_float = audio_data.astype(np.float32) / 32767.0
+        elif audio_data.dtype == np.int32:
+            audio_float = audio_data.astype(np.float32) / 2147483647.0
+        else:
+            audio_float = audio_data.astype(np.float32)
+
+        # Handle stereo by averaging channels
+        if audio_float.ndim > 1:
+            audio_float = audio_float.mean(axis=1)
 
         # Normalize audio
-        audio_data = audio_data / np.max(np.abs(audio_data)) * 0.95
+        max_val = np.max(np.abs(audio_float))
+        if max_val > 0:
+            audio_float = audio_float / max_val * 0.95
 
         # Convert to int16 for WAV
-        audio_int16 = (audio_data * 32767).astype(np.int16)
+        audio_int16 = (audio_float * 32767).astype(np.int16)
 
-        # Create WAV file in memory
-        wav_buffer = io.BytesIO()
-        wavfile.write(wav_buffer, sample_rate, audio_int16)
-        wav_buffer.seek(0)
-
-        # Encode to base64
-        audio_base64 = base64.b64encode(wav_buffer.read()).decode("utf-8")
+        # Write normalized WAV to shared tracks directory
+        output_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
+        wavfile.write(str(output_path), sample_rate, audio_int16)
 
         return GenerationResponse(
-            audio=audio_base64,
+            audio_path=str(output_path),
             sample_rate=sample_rate,
-            duration=len(audio_data) / sample_rate
+            duration=len(audio_float) / sample_rate,
         )
 
+    finally:
+        # Clean up temp directory
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        # Clear MPS cache after generation
+        _clear_mps_cache()
+
+
+async def generate_musicgen_http(request: GenerationRequest) -> GenerationResponse:
+    """Generate music using MusicGen model (HTTP wrapper)."""
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _executor,
+            _generate_musicgen_sync,
+            request,
+            lambda p, m: None,  # No-op progress for HTTP
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def generate_acestep(request: GenerationRequest) -> GenerationResponse:
-    """Generate music using ACE-Step model."""
-    import tempfile
-    import os
-
+async def generate_acestep_http(request: GenerationRequest) -> GenerationResponse:
+    """Generate music using ACE-Step v1.5 model (HTTP wrapper)."""
     try:
-        pipeline = load_acestep_model(request.model)
-
-        # Set seed (None for random)
-        manual_seeds = [request.seed] if request.seed is not None else None
-
-        # Quality mode determines inference steps
-        infer_steps = 60 if request.quality_mode == "quality" else 27
-
-        # Default to instrumental if no lyrics provided
-        lyrics = request.lyrics if request.lyrics else "[inst]"
-
-        # Create temp file for output
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            temp_path = tmp.name
-
-        try:
-            # Generate audio using __call__ method
-            pipeline(
-                prompt=request.prompt,
-                lyrics=lyrics,
-                audio_duration=float(request.duration),
-                guidance_scale=request.guidance_scale,
-                manual_seeds=manual_seeds,
-                infer_step=infer_steps,
-                scheduler_type="euler",
-                format="wav",
-                save_path=temp_path,
-            )
-
-            # Read the generated audio file
-            sample_rate, audio_data = wavfile.read(temp_path)
-
-            # Convert to float for normalization
-            if audio_data.dtype == np.int16:
-                audio_float = audio_data.astype(np.float32) / 32767.0
-            elif audio_data.dtype == np.int32:
-                audio_float = audio_data.astype(np.float32) / 2147483647.0
-            else:
-                audio_float = audio_data.astype(np.float32)
-
-            # Handle stereo by taking first channel or averaging
-            if audio_float.ndim > 1:
-                audio_float = audio_float.mean(axis=1)
-
-            # Normalize audio
-            max_val = np.max(np.abs(audio_float))
-            if max_val > 0:
-                audio_float = audio_float / max_val * 0.95
-
-            # Convert to int16 for WAV
-            audio_int16 = (audio_float * 32767).astype(np.int16)
-
-            # Create WAV file in memory
-            wav_buffer = io.BytesIO()
-            wavfile.write(wav_buffer, sample_rate, audio_int16)
-            wav_buffer.seek(0)
-
-            # Encode to base64
-            audio_base64 = base64.b64encode(wav_buffer.read()).decode("utf-8")
-
-            return GenerationResponse(
-                audio=audio_base64,
-                sample_rate=sample_rate,
-                duration=len(audio_float) / sample_rate
-            )
-
-        finally:
-            # Clean up temp file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    except ImportError as e:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _executor,
+            _generate_acestep_sync,
+            request,
+            lambda p, m: None,
+        )
+    except ImportError:
         raise HTTPException(
             status_code=501,
-            detail="ACE-Step not installed. Install with: pip install git+https://github.com/ace-step/ACE-Step.git"
+            detail="ACE-Step v1.5 not installed. Install with: pip install git+https://github.com/ace-step/ACE-Step-1.5.git",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# MARK: - WebSocket Generation Endpoint
+
+@app.websocket("/ws/generate")
+async def ws_generate(websocket: WebSocket):
+    """WebSocket endpoint for generation with real-time progress."""
+    await websocket.accept()
+
+    try:
+        # 1. Receive generation request from client
+        raw = await websocket.receive_text()
+        data = json.loads(raw)
+        request = GenerationRequest(**data)
+
+        # Validate model
+        model_info = MODEL_REGISTRY.get(request.model)
+        if not model_info:
+            await websocket.send_json({"type": "error", "detail": f"Unknown model: {request.model}"})
+            return
+
+        if request.duration > model_info.max_duration:
+            await websocket.send_json({
+                "type": "error",
+                "detail": f"Max duration for {request.model} is {model_info.max_duration}s, got {request.duration}s",
+            })
+            return
+
+        # 2. Set up progress queue (thread-safe bridge from sync -> async)
+        progress_queue: queue.Queue = queue.Queue()
+
+        def progress_cb(progress: float, message: str):
+            progress_queue.put(("progress", progress, message))
+
+        # 3. Choose generator based on model family
+        if model_info.family == ModelFamily.MUSICGEN:
+            gen_fn = _generate_musicgen_sync
+        else:
+            gen_fn = _generate_acestep_sync
+
+        # 4. Run generation in thread pool
+        loop = asyncio.get_event_loop()
+        gen_future = loop.run_in_executor(_executor, gen_fn, request, progress_cb)
+
+        # 5. Forward progress messages and send heartbeats while waiting
+        while True:
+            # Check for progress messages (non-blocking)
+            try:
+                while True:
+                    msg_type, progress, message = progress_queue.get_nowait()
+                    await websocket.send_json({
+                        "type": msg_type,
+                        "progress": progress,
+                        "message": message,
+                    })
+            except queue.Empty:
+                pass
+
+            # Check if generation is done
+            if gen_future.done():
+                break
+
+            # Send heartbeat to keep connection alive
+            await websocket.send_json({"type": "heartbeat"})
+            await asyncio.sleep(2)
+
+        # 6. Drain any remaining progress messages
+        try:
+            while True:
+                msg_type, progress, message = progress_queue.get_nowait()
+                await websocket.send_json({
+                    "type": msg_type,
+                    "progress": progress,
+                    "message": message,
+                })
+        except queue.Empty:
+            pass
+
+        # 7. Get result or propagate error
+        result: GenerationResponse = gen_future.result()
+
+        await websocket.send_json({
+            "type": "complete",
+            "audio_path": result.audio_path,
+            "sample_rate": result.sample_rate,
+            "duration": result.duration,
+        })
+
+    except WebSocketDisconnect:
+        # Client disconnected (e.g. cancelled) - nothing to do
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "detail": str(e)})
+        except Exception:
+            pass  # Connection already closed
 
 
 # MARK: - Model Deletion Endpoint
@@ -411,15 +837,19 @@ async def generate_acestep(request: GenerationRequest) -> GenerationResponse:
 @app.delete("/models/{model_name}")
 async def delete_model(model_name: str):
     """Unload a model from memory"""
+    global _acestep_dit_handler, _acestep_llm_handler, _acestep_initialized
+
     deleted = False
 
     if model_name in models:
         del models[model_name]
-        del processors[model_name]
         deleted = True
 
-    if model_name in acestep_pipelines:
-        del acestep_pipelines[model_name]
+    if model_name == "acestep" and _acestep_initialized:
+        _acestep_dit_handler = None
+        _acestep_llm_handler = None
+        _acestep_initialized = False
+        _clear_mps_cache()
         deleted = True
 
     if deleted:

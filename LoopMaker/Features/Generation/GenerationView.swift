@@ -191,11 +191,22 @@ struct GenerationView: View {
 
                     HStack(spacing: Spacing.xs) {
                         ForEach(availableDurations, id: \.self) { duration in
-                            DurationChip(
-                                duration: duration,
-                                isSelected: selectedDuration == duration,
-                                action: { selectedDuration = duration }
-                            )
+                            ZStack {
+                                DurationChip(
+                                    duration: duration,
+                                    isSelected: selectedDuration == duration,
+                                    action: {
+                                        if !duration.requiresPro || appState.isProUser {
+                                            selectedDuration = duration
+                                        }
+                                    }
+                                )
+
+                                // Pro lock overlay for extended durations
+                                if duration.requiresPro && !appState.isProUser {
+                                    FeatureLockOverlay(feature: .extendedDuration)
+                                }
+                            }
                         }
                     }
                 }
@@ -213,13 +224,30 @@ struct GenerationView: View {
 
                     HStack(spacing: Spacing.xs) {
                         ForEach(ModelType.allCases, id: \.self) { model in
-                            ModelChip(
-                                model: model,
-                                isSelected: appState.selectedModel == model,
-                                downloadState: appState.modelDownloadStates[model] ?? .notDownloaded,
-                                action: { appState.selectedModel = model },
-                                onDownload: { appState.downloadModel(model) }
-                            )
+                            ZStack {
+                                ModelChip(
+                                    model: model,
+                                    isSelected: appState.selectedModel == model,
+                                    downloadState: appState.modelDownloadStates[model] ?? .notDownloaded,
+                                    action: {
+                                        if appState.isModelAccessible(model) {
+                                            appState.selectedModel = model
+                                        }
+                                    },
+                                    onDownload: {
+                                        if appState.isModelAccessible(model) {
+                                            appState.downloadModel(model)
+                                        }
+                                    }
+                                )
+
+                                // Pro lock overlay
+                                if model.requiresPro && !appState.isProUser {
+                                    FeatureLockOverlay(
+                                        feature: model == .acestep ? .aceStepModel : .mediumModel
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -286,11 +314,13 @@ struct GenerationView: View {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .scaleEffect(0.8)
+                        .frame(width: 18, height: 18)
                         .tint(.white)
                 } else if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .scaleEffect(0.8)
+                        .frame(width: 18, height: 18)
                         .tint(.white)
                 } else {
                     Image(systemName: "waveform")
@@ -376,13 +406,14 @@ struct GenerationView: View {
 
         let estimate: String
         if request.model.family == .acestep {
-            // ACE-Step is faster: ~26s for 1 min on M2 Max
+            // ACE-Step v1.5 turbo (8 steps) on CPU (MPS has Metal shader bugs).
+            // LM runs fast on MLX, but DiT diffusion on CPU is ~1-2 min per 10s.
             switch request.duration {
-            case .short:     estimate = "10-15 seconds"
-            case .medium:    estimate = "20-30 seconds"
-            case .long:      estimate = "25-40 seconds"
-            case .extended:  estimate = "45-60 seconds"
-            case .maximum:   estimate = "1-2 minutes"
+            case .short:     estimate = "1-2 minutes"
+            case .medium:    estimate = "3-6 minutes"
+            case .long:      estimate = "6-12 minutes"
+            case .extended:  estimate = "12-20 minutes"
+            case .maximum:   estimate = "20-40 minutes"
             }
         } else {
             // MusicGen is slower: ~60s for 30s
@@ -580,6 +611,7 @@ struct ModelChip: View {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .scaleEffect(0.5)
+                        .frame(width: 14, height: 14)
                     Text("\(Int(progress * 100))%")
                         .font(Typography.caption2)
                 case .downloaded:

@@ -54,17 +54,17 @@ final class LoopMakerTests: XCTestCase {
     func testModelTypeProperties() {
         XCTAssertEqual(ModelType.small.sizeGB, 1.2)
         XCTAssertEqual(ModelType.medium.sizeGB, 6.0)
-        XCTAssertEqual(ModelType.acestep.sizeGB, 7.0)
+        XCTAssertEqual(ModelType.acestep.sizeGB, 5.0)  // v1.5: 2B DiT + 0.6B LM
 
         XCTAssertEqual(ModelType.small.minimumRAM, 8)
         XCTAssertEqual(ModelType.medium.minimumRAM, 16)
-        XCTAssertEqual(ModelType.acestep.minimumRAM, 16)
+        XCTAssertEqual(ModelType.acestep.minimumRAM, 8)  // v1.5 is lighter
     }
 
     func testModelTypeSizeFormatted() {
         XCTAssertEqual(ModelType.small.sizeFormatted, "1.2 GB")
         XCTAssertEqual(ModelType.medium.sizeFormatted, "6.0 GB")
-        XCTAssertEqual(ModelType.acestep.sizeFormatted, "7.0 GB")
+        XCTAssertEqual(ModelType.acestep.sizeFormatted, "5.0 GB")
     }
 
     func testModelTypeFamily() {
@@ -88,12 +88,14 @@ final class LoopMakerTests: XCTestCase {
     // MARK: - Quality Mode Tests
 
     func testQualityModeInferenceSteps() {
-        XCTAssertEqual(QualityMode.fast.inferenceSteps, 27)
-        XCTAssertEqual(QualityMode.quality.inferenceSteps, 60)
+        XCTAssertEqual(QualityMode.draft.inferenceSteps, 4)
+        XCTAssertEqual(QualityMode.fast.inferenceSteps, 8)    // v1.5 turbo
+        XCTAssertEqual(QualityMode.quality.inferenceSteps, 50) // v1.5 base/sft
     }
 
     func testQualityModeDisplayName() {
-        XCTAssertEqual(QualityMode.fast.displayName, "Fast")
+        XCTAssertEqual(QualityMode.draft.displayName, "Draft")
+        XCTAssertEqual(QualityMode.fast.displayName, "Turbo")
         XCTAssertEqual(QualityMode.quality.displayName, "Quality")
     }
 
@@ -150,7 +152,7 @@ final class LoopMakerTests: XCTestCase {
 
         XCTAssertEqual(acestepRequest.effectiveLyrics, "[verse]\nHello world")
         XCTAssertEqual(acestepRequest.qualityMode, .quality)
-        XCTAssertEqual(acestepRequest.guidanceScale, 15.0) // default
+        XCTAssertEqual(acestepRequest.guidanceScale, 7.0) // v1.5 default
 
         // ACE-Step instrumental (no lyrics)
         let instrumentalRequest = GenerationRequest(

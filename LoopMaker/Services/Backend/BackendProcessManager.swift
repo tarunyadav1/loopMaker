@@ -19,6 +19,18 @@ public final class BackendProcessManager: ObservableObject {
         case running
         case error(String)
 
+        /// True only during first-time installation (creating venv, installing deps).
+        /// Normal backend startup (checkingPython, startingBackend, etc.) is NOT setup.
+        public var isFirstTimeSetup: Bool {
+            switch self {
+            case .creatingVenv, .installingDependencies:
+                return true
+            default:
+                return false
+            }
+        }
+
+        /// True when any startup work is happening (including normal reconnect)
         public var isSetupPhase: Bool {
             switch self {
             case .notStarted, .checkingPython, .checkingVenv, .creatingVenv,
@@ -36,7 +48,7 @@ public final class BackendProcessManager: ObservableObject {
             case .checkingPython:
                 return "Checking system requirements..."
             case .pythonMissing:
-                return "Python not found. Please install Python 3.11+."
+                return "Python 3.11 not found. ACE-Step v1.5 requires Python 3.11.x."
             case .checkingVenv:
                 return "Checking environment..."
             case .creatingVenv:
@@ -96,6 +108,30 @@ public final class BackendProcessManager: ObservableObject {
             .appendingPathComponent("Python.framework/Versions/3.11/bin/python3", isDirectory: false)
     }
 
+    /// In dev mode (no bundled backend), resolve the source backend directory.
+    /// This avoids fragile file-copying and runs uvicorn directly from source.
+    private var sourceBackendURL: URL? {
+        // Navigate from this Swift source file to the project root's backend/ dir
+        // BackendProcessManager.swift → Backend/ → Services/ → LoopMaker/ → project root
+        let thisFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = thisFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let candidate = projectRoot.appendingPathComponent("backend", isDirectory: true)
+        let mainPy = candidate.appendingPathComponent("main.py")
+        if FileManager.default.fileExists(atPath: mainPy.path) {
+            return candidate
+        }
+        return nil
+    }
+
+    /// The directory where uvicorn should run (source dir in dev, App Support in prod)
+    private var backendWorkingURL: URL {
+        sourceBackendURL ?? backendURL
+    }
+
     // MARK: - Initialization
 
     public init() {}
@@ -115,7 +151,7 @@ public final class BackendProcessManager: ObservableObject {
         await cleanupOrphanedProcesses()
 
         // Check for Python
-        guard let pythonPath = detectPython() else {
+        guard let pythonPath = await detectPython() else {
             state = .pythonMissing
             return
         }
@@ -158,7 +194,7 @@ public final class BackendProcessManager: ObservableObject {
     }
 
     /// Stop the backend process gracefully
-    public func stopBackend() {
+    public func stopBackend() async {
         healthCheckTask?.cancel()
         healthCheckTask = nil
 
@@ -175,7 +211,7 @@ public final class BackendProcessManager: ObservableObject {
         // Wait up to 5 seconds for graceful shutdown
         let deadline = Date().addingTimeInterval(5)
         while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
         // Force kill if still running
@@ -199,7 +235,7 @@ public final class BackendProcessManager: ObservableObject {
     // MARK: - Python Detection
 
     /// Detect Python installation, preferring bundled Python
-    private func detectPython() -> URL? {
+    private func detectPython() async -> URL? {
         // First check for bundled Python (zero-config)
         if let bundled = bundledPythonURL,
            FileManager.default.isExecutableFile(atPath: bundled.path) {
@@ -219,7 +255,7 @@ public final class BackendProcessManager: ObservableObject {
         for path in systemPaths {
             if FileManager.default.isExecutableFile(atPath: path) {
                 // Verify it's Python 3.9+
-                if verifyPythonVersion(at: URL(fileURLWithPath: path)) {
+                if await verifyPythonVersion(at: URL(fileURLWithPath: path)) {
                     logger.info("Found system Python at: \(path)")
                     return URL(fileURLWithPath: path)
                 }
@@ -227,11 +263,11 @@ public final class BackendProcessManager: ObservableObject {
         }
 
         // Try `which python3`
-        if let whichResult = runShellCommand("which python3"),
+        if let whichResult = await runShellCommand("which python3"),
            !whichResult.isEmpty {
             let path = whichResult.trimmingCharacters(in: .whitespacesAndNewlines)
             if FileManager.default.isExecutableFile(atPath: path),
-               verifyPythonVersion(at: URL(fileURLWithPath: path)) {
+               await verifyPythonVersion(at: URL(fileURLWithPath: path)) {
                 logger.info("Found Python via which: \(path)")
                 return URL(fileURLWithPath: path)
             }
@@ -241,8 +277,8 @@ public final class BackendProcessManager: ObservableObject {
         return nil
     }
 
-    private func verifyPythonVersion(at path: URL) -> Bool {
-        guard let output = runShellCommand("\(path.path) --version") else {
+    private func verifyPythonVersion(at path: URL) async -> Bool {
+        guard let output = await runShellCommand("\(path.path) --version") else {
             return false
         }
 
@@ -260,8 +296,8 @@ public final class BackendProcessManager: ObservableObject {
             return false
         }
 
-        // Require Python 3.9+
-        return major == 3 && minor >= 9
+        // Require Python 3.11+ (ACE-Step v1.5 requires ==3.11.*)
+        return major == 3 && minor >= 11
     }
 
     // MARK: - Venv Setup
@@ -282,8 +318,7 @@ public final class BackendProcessManager: ObservableObject {
         createVenvProcess.arguments = ["-m", "venv", venvURL.path]
         createVenvProcess.currentDirectoryURL = backendURL
 
-        try createVenvProcess.run()
-        createVenvProcess.waitUntilExit()
+        try await runProcessAndWait(createVenvProcess)
 
         guard createVenvProcess.terminationStatus == 0 else {
             throw BackendSetupError.venvCreationFailed
@@ -295,7 +330,7 @@ public final class BackendProcessManager: ObservableObject {
     private func copyBundledBackendFiles() throws {
         guard let bundledBackend = bundledBackendURL else {
             // Development mode: use backend files from source
-            let sourceBackend = URL(fileURLWithPath: #file)
+            let sourceBackend = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -314,10 +349,14 @@ public final class BackendProcessManager: ObservableObject {
     }
 
     private func copyBackendFiles(from source: URL) throws {
+        // Ensure destination directory exists
+        try FileManager.default.createDirectory(at: backendURL, withIntermediateDirectories: true)
+
         let files = ["main.py", "requirements.txt"]
 
         for file in files {
             let sourceFile = source.appendingPathComponent(file)
+            guard FileManager.default.fileExists(atPath: sourceFile.path) else { continue }
             let destFile = backendURL.appendingPathComponent(file)
 
             if FileManager.default.fileExists(atPath: destFile.path) {
@@ -325,6 +364,21 @@ public final class BackendProcessManager: ObservableObject {
             }
 
             try FileManager.default.copyItem(at: sourceFile, to: destFile)
+        }
+
+        // Copy Python package directories (e.g. mlx_musicgen/)
+        let packageDirs = ["mlx_musicgen"]
+        for dir in packageDirs {
+            let sourceDir = source.appendingPathComponent(dir)
+            let destDir = backendURL.appendingPathComponent(dir)
+
+            guard FileManager.default.fileExists(atPath: sourceDir.path) else { continue }
+
+            if FileManager.default.fileExists(atPath: destDir.path) {
+                try FileManager.default.removeItem(at: destDir)
+            }
+
+            try FileManager.default.copyItem(at: sourceDir, to: destDir)
         }
 
         let backendPath = self.backendURL.path
@@ -350,12 +404,10 @@ public final class BackendProcessManager: ObservableObject {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        try process.run()
-
         // Simulate progress while installing (pip doesn't give good progress)
         let progressTask = Task {
             var progress = 0.2
-            while process.isRunning && progress < 0.85 {
+            while !Task.isCancelled && progress < 0.85 {
                 try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
                 progress += 0.05
                 await MainActor.run {
@@ -363,9 +415,9 @@ public final class BackendProcessManager: ObservableObject {
                 }
             }
         }
+        defer { progressTask.cancel() }
 
-        process.waitUntilExit()
-        progressTask.cancel()
+        try await runProcessAndWait(process)
 
         guard process.terminationStatus == 0 else {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
@@ -388,7 +440,9 @@ public final class BackendProcessManager: ObservableObject {
         let process = Process()
         process.executableURL = pythonPath
         process.arguments = ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"]
-        process.currentDirectoryURL = backendURL
+        let workingDir = backendWorkingURL
+        process.currentDirectoryURL = workingDir
+        logger.info("Backend working directory: \(workingDir.path)")
 
         // Set environment
         var env = ProcessInfo.processInfo.environment
@@ -450,7 +504,7 @@ public final class BackendProcessManager: ObservableObject {
         // Check if process is still running
         if kill(savedPid, 0) == 0 {
             // Process exists, check if it's our backend (listening on 8000)
-            if let output = runShellCommand("lsof -i :8000 -t"),
+            if let output = await runShellCommand("lsof -i :8000 -t"),
                output.contains(String(savedPid)) {
                 logger.info("Killing orphaned backend process: \(savedPid)")
                 kill(savedPid, SIGTERM)
@@ -483,7 +537,7 @@ public final class BackendProcessManager: ObservableObject {
 
     // MARK: - Helpers
 
-    private func runShellCommand(_ command: String) -> String? {
+    private func runShellCommand(_ command: String) async -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["-c", command]
@@ -493,13 +547,28 @@ public final class BackendProcessManager: ObservableObject {
         process.standardError = FileHandle.nullDevice
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            try await runProcessAndWait(process)
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         } catch {
             return nil
+        }
+    }
+
+    private func runProcessAndWait(_ process: Process) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { process in
+                process.terminationHandler = nil
+                continuation.resume(returning: ())
+            }
+
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(throwing: error)
+            }
         }
     }
 }
@@ -517,7 +586,7 @@ public enum BackendSetupError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .pythonNotFound:
-            return "Python 3.9+ is required but not found."
+            return "Python 3.11 is required but not found. ACE-Step v1.5 requires Python 3.11.x."
         case .venvCreationFailed:
             return "Failed to create Python virtual environment."
         case .backendFilesNotFound:

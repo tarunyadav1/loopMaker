@@ -2,6 +2,8 @@ import Foundation
 
 /// A generated music track
 public struct Track: Identifiable, Codable, Sendable, Hashable {
+    private static let displayDateStyle = Date.FormatStyle(date: .abbreviated, time: .shortened)
+
     public static func == (lhs: Track, rhs: Track) -> Bool {
         lhs.id == rhs.id
     }
@@ -55,10 +57,7 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
 
     /// Formatted creation date
     public var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: createdAt)
+        createdAt.formatted(Self.displayDateStyle)
     }
 
     /// Whether this track has lyrics

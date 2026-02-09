@@ -25,7 +25,7 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
         switch self {
         case .small: return 1.2
         case .medium: return 6.0
-        case .acestep: return 7.0
+        case .acestep: return 5.0  // v1.5: ~4GB DiT + ~1GB LM (0.6B)
         }
     }
 
@@ -38,7 +38,8 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
     public var minimumRAM: Int {
         switch self {
         case .small: return 8
-        case .medium, .acestep: return 16
+        case .medium: return 16
+        case .acestep: return 8  // v1.5 turbo: DiT ~4GB + 0.6B LM ~1.2GB (float32 ~10GB)
         }
     }
 
@@ -46,11 +47,13 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
     public var recommendedRAM: Int {
         switch self {
         case .small: return 16
-        case .medium, .acestep: return 32
+        case .medium: return 32
+        case .acestep: return 16  // v1.5: comfortable with CPU offload on 16GB
         }
     }
 
-    /// Maximum duration this model supports in seconds
+    /// Maximum duration this model supports in seconds.
+    /// MusicGen uses chunked continuation with crossfade for durations > 30s.
     public var maxDurationSeconds: Int {
         switch self {
         case .small, .medium: return 60
@@ -77,7 +80,7 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
         switch self {
         case .small: return "300M params, fast generation"
         case .medium: return "1.5B params, better quality"
-        case .acestep: return "3.5B params, lyrics support, up to 4min"
+        case .acestep: return "2B+0.6B params, lyrics & vocals, up to 4min"
         }
     }
 
@@ -86,7 +89,7 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
         switch self {
         case .small: return "300M"
         case .medium: return "1.5B"
-        case .acestep: return "3.5B"
+        case .acestep: return "2.6B"  // v1.5: 2B DiT + 0.6B LM
         }
     }
 
@@ -96,5 +99,11 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
         case .musicgen: return "waveform"
         case .acestep: return "music.mic"
         }
+    }
+
+    /// Whether this model requires a Pro license
+    public var requiresPro: Bool {
+        // TODO: Re-enable Pro gating before release
+        return false
     }
 }

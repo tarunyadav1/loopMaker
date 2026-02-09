@@ -21,11 +21,11 @@
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
+    <string>26.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 LoopMaker. All rights reserved.</string>
+    <string>Copyright &#xA9; 2026 LoopMaker. All rights reserved.</string>
     <key>NSMainStoryboardFile</key>
     <string></string>
     <key>NSPrincipalClass</key>
@@ -34,5 +34,11 @@
     <true/>
     <key>NSSupportsSuddenTermination</key>
     <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUFeedURL</key>
+    <string>https://loopmaker-updates.tarunyadav9761.workers.dev/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>GENERATE_NEW_KEY</string>
 </dict>
 </plist>

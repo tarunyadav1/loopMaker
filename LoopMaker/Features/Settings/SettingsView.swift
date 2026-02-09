@@ -1,67 +1,272 @@
 import SwiftUI
 
+/// Settings view with horizontal tab bar navigation (Echo-text style)
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) var dismiss
+    @State private var selectedTab: SettingsTab = .general
+
+    enum SettingsTab: String, CaseIterable {
+        case general = "General"
+        case models = "Models"
+        case updates = "Updates"
+        case license = "License"
+        case about = "About"
+
+        var icon: String {
+            switch self {
+            case .general: return "gearshape"
+            case .models: return "cpu"
+            case .updates: return "arrow.triangle.2.circlepath"
+            case .license: return "star.circle"
+            case .about: return "info.circle"
+            }
+        }
+    }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                // Models Section
-                Section("Models") {
-                    ForEach(ModelType.allCases, id: \.self) { model in
-                        ModelRow(model: model)
-                    }
+        VStack(spacing: 0) {
+            // Top tab bar
+            tabBar
+                .padding(.horizontal, 24)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+
+            // Content area
+            ScrollView(showsIndicators: false) {
+                selectedTabContent
+                    .padding(32)
+                    .frame(maxWidth: 700, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .animation(.easeInOut(duration: 0.2), value: selectedTab)
+    }
+
+    // MARK: - Tab Bar
+
+    private var tabBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
+                ForEach(SettingsTab.allCases, id: \.self) { tab in
+                    tabButton(tab)
                 }
+            }
+            .padding(4)
+            .glassEffect(in: .capsule)
+        }
+    }
 
-                // Storage Section
-                Section("Storage") {
-                    LabeledContent("Tracks", value: "\(appState.tracks.count)")
-                    LabeledContent("Storage Used", value: storageUsed)
+    private func tabButton(_ tab: SettingsTab) -> some View {
+        Button {
+            withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
+                selectedTab = tab
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 11))
+                Text(tab.rawValue)
+                    .font(.system(size: 12, weight: selectedTab == tab ? .semibold : .medium))
+            }
+            .foregroundColor(selectedTab == tab ? .white : .primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                selectedTab == tab
+                    ? DesignSystem.Colors.accent
+                    : Color.clear,
+                in: .capsule
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
 
-                    Button("Clear All Tracks", role: .destructive) {
+    // MARK: - Content
+
+    @ViewBuilder
+    private var selectedTabContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            // Header
+            VStack(alignment: .leading, spacing: 4) {
+                Text(selectedTab.rawValue)
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+
+                Text(tabDescription)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+
+            // Content
+            Group {
+                switch selectedTab {
+                case .general:
+                    generalSection
+                case .models:
+                    modelsSection
+                case .updates:
+                    updatesSection
+                case .license:
+                    LicenseSettingsSection()
+                case .about:
+                    aboutSection
+                }
+            }
+        }
+    }
+
+    private var tabDescription: String {
+        switch selectedTab {
+        case .general: return "Storage and playback preferences"
+        case .models: return "Manage AI model downloads"
+        case .updates: return "Check for app updates"
+        case .license: return "Manage your LoopMaker Pro license"
+        case .about: return "Version info and legal"
+        }
+    }
+
+    // MARK: - General Section
+
+    private var generalSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Storage
+            settingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Storage", systemImage: "internaldrive")
+                        .font(.system(size: 14, weight: .semibold))
+
+                    HStack {
+                        Text("Tracks")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(appState.tracks.count)")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+
+                    HStack {
+                        Text("Storage Used")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(storageUsed)
+                            .font(.system(size: 13, weight: .medium))
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
                         clearAllTracks()
+                    } label: {
+                        Text("Clear All Tracks")
+                            .font(.system(size: 13, weight: .medium))
                     }
                     .disabled(appState.tracks.isEmpty)
                 }
+            }
 
-                // About Section
-                Section("About") {
-                    LabeledContent("Version", value: "1.0.0")
-                    LabeledContent("Build", value: "1")
+            // Model Licensing
+            settingsCard {
+                LicensingNoticeView()
+            }
+        }
+    }
 
-                    Link("Privacy Policy", destination: URL(string: "https://loopmaker.app/privacy")!)
-                    Link("Terms of Service", destination: URL(string: "https://loopmaker.app/terms")!)
-                }
+    // MARK: - Models Section
 
-                // Licensing Section
-                Section {
-                    LicensingNoticeView()
-                } header: {
-                    Text("Licensing")
-                } footer: {
-                    Text("MusicGen model weights are licensed CC-BY-NC 4.0")
+    private var modelsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(ModelType.allCases, id: \.self) { model in
+                settingsCard {
+                    ModelRow(model: model)
                 }
             }
-            .formStyle(.grouped)
-            .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
+        }
+    }
+
+    // MARK: - Updates Section
+
+    private var updatesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            settingsCard {
+                UpdatesSettingsContent()
+            }
+        }
+    }
+
+    // MARK: - About Section
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            settingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Version")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(UpdateService.shared.currentVersion)
+                            .font(.system(size: 13, weight: .medium))
+                    }
+
+                    HStack {
+                        Text("Build")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(UpdateService.shared.currentBuild)
+                            .font(.system(size: 13, weight: .medium))
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        linkRow("Privacy Policy", url: Constants.URLs.privacyURL)
+                        linkRow("Terms of Service", url: Constants.URLs.termsURL)
+                        linkRow("Get Help", url: Constants.URLs.helpURL)
                     }
                 }
             }
         }
-        .frame(minWidth: 500, minHeight: 600)
+    }
+
+    // MARK: - Helpers
+
+    private func settingsCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
+    }
+
+    private func linkRow(_ title: String, url: URL) -> some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            HStack {
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundColor(.primary)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private var storageUsed: String {
         let totalBytes = appState.tracks.reduce(0) { total, track in
-            let size = (try? FileManager.default.attributesOfItem(atPath: track.audioURL.path)[.size] as? Int) ?? 0
+            let size = (try? FileManager.default.attributesOfItem(
+                atPath: track.audioURL.path
+            )[.size] as? Int) ?? 0
             return total + size
         }
-
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .file
@@ -77,6 +282,68 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Updates Settings Content
+
+struct UpdatesSettingsContent: View {
+    @StateObject private var updateService = UpdateService.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Current Version")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(updateService.currentVersion) (\(updateService.currentBuild))")
+                    .font(.system(size: 13, weight: .medium))
+            }
+
+            HStack {
+                Text("Last Checked")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(updateService.lastCheckDateFormatted)
+                    .font(.system(size: 13, weight: .medium))
+            }
+
+            Divider()
+
+            Toggle("Check for updates automatically", isOn: Binding(
+                get: { updateService.automaticUpdateChecks },
+                set: { updateService.automaticUpdateChecks = $0 }
+            ))
+            .font(.system(size: 13))
+
+            Toggle("Download updates automatically", isOn: Binding(
+                get: { updateService.automaticDownloads },
+                set: { updateService.automaticDownloads = $0 }
+            ))
+            .font(.system(size: 13))
+
+            Divider()
+
+            Button {
+                updateService.checkForUpdates()
+            } label: {
+                Text("Check for Updates Now")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(
+                        DesignSystem.Colors.accent,
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!updateService.canCheckForUpdates)
+        }
+    }
+}
+
+// MARK: - Model Row
+
 struct ModelRow: View {
     @EnvironmentObject var appState: AppState
     let model: ModelType
@@ -88,19 +355,30 @@ struct ModelRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.displayName)
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Text(model.displayName)
+                        .font(.system(size: 14, weight: .semibold))
 
-                Text("\(model.parameters) parameters • \(model.sizeFormatted)")
-                    .font(.caption)
+                    if model.requiresPro {
+                        ProBadge()
+                    }
+                }
+
+                Text("\(model.parameters) parameters \u{2022} \(model.sizeFormatted)")
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            downloadStateView
+            if model.requiresPro && !appState.isProUser {
+                Label("Pro", systemImage: "lock.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.orange)
+            } else {
+                downloadStateView
+            }
         }
-        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -111,61 +389,63 @@ struct ModelRow: View {
                 appState.downloadModel(model)
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
 
         case .downloading(let progress):
             HStack(spacing: 8) {
                 ProgressView(value: progress)
-                    .frame(width: 100)
+                    .frame(width: 80)
                 Text("\(Int(progress * 100))%")
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
         case .downloaded:
             Label("Downloaded", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12))
                 .foregroundStyle(.green)
 
         case .error:
             VStack(alignment: .trailing) {
                 Label("Error", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
                     .foregroundStyle(.red)
                 Button("Retry") {
                     appState.downloadModel(model)
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(.mini)
             }
         }
     }
 }
 
+// MARK: - Licensing Notice
+
 struct LicensingNoticeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Non-Commercial Use Only", systemImage: "exclamationmark.triangle.fill")
-                .font(.headline)
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.orange)
 
             Text("""
                 Generated music uses Meta's MusicGen model (CC-BY-NC 4.0).
 
                 You MAY use for:
-                • Personal projects
-                • Educational content
-                • Non-monetized videos
+                \u{2022} Personal projects
+                \u{2022} Educational content
+                \u{2022} Non-monetized videos
 
                 You may NOT use for:
-                • Monetized YouTube/TikTok
-                • Commercial podcasts
-                • Paid client work
-                • Commercial products
+                \u{2022} Monetized YouTube/TikTok
+                \u{2022} Commercial podcasts
+                \u{2022} Paid client work
+                \u{2022} Commercial products
                 """)
-                .font(.caption)
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
-        .padding()
-        .background(.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

@@ -1,21 +1,24 @@
 import Foundation
 
-/// Quality mode for ACE-Step generation
+/// Quality mode for ACE-Step v1.5 generation
 public enum QualityMode: String, CaseIterable, Codable, Sendable {
-    case fast     // 27 inference steps - faster generation
-    case quality  // 60 inference steps - better quality
+    case draft    // 4 inference steps - quick preview
+    case fast     // 8 inference steps - turbo (default, recommended)
+    case quality  // 50 inference steps - highest quality
 
     public var displayName: String {
         switch self {
-        case .fast: return "Fast"
+        case .draft: return "Draft"
+        case .fast: return "Turbo"
         case .quality: return "Quality"
         }
     }
 
     public var inferenceSteps: Int {
         switch self {
-        case .fast: return 27
-        case .quality: return 60
+        case .draft: return 4
+        case .fast: return 8
+        case .quality: return 50
         }
     }
 }
@@ -40,7 +43,7 @@ public struct GenerationRequest: Sendable {
         seed: UInt64? = nil,
         lyrics: String? = nil,
         qualityMode: QualityMode = .fast,
-        guidanceScale: Double = 15.0
+        guidanceScale: Double = 7.0  // v1.5 default (was 15.0 in v1)
     ) {
         self.prompt = prompt
         self.duration = duration

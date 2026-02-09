@@ -63,18 +63,20 @@ build() {
 run() {
     kill_app
 
-    # Find the built executable
-    EXE_PATH=$(find "$DERIVED_DATA" -path "*/$APP_NAME-*/Build/Products/Debug/$APP_NAME" -type f -perm +111 2>/dev/null | head -1)
+    # Prefer launching the .app bundle so Info.plist (CFBundleIdentifier) and resources load correctly
+    APP_BUNDLE=$(find "$DERIVED_DATA" -path "*/$APP_NAME-*/Build/Products/Debug/$APP_NAME.app" -type d 2>/dev/null | head -1)
 
-    if [ -z "$EXE_PATH" ]; then
-        warn "Executable not found, building first..."
+    # If not found, build first
+    if [ -z "$APP_BUNDLE" ]; then
+        warn "App bundle not found, building first..."
         build
-        EXE_PATH=$(find "$DERIVED_DATA" -path "*/$APP_NAME-*/Build/Products/Debug/$APP_NAME" -type f -perm +111 2>/dev/null | head -1)
+        APP_BUNDLE=$(find "$DERIVED_DATA" -path "*/$APP_NAME-*/Build/Products/Debug/$APP_NAME.app" -type d 2>/dev/null | head -1)
     fi
 
-    if [ -n "$EXE_PATH" ]; then
-        log "Launching: $EXE_PATH"
-        "$EXE_PATH" &
+    if [ -n "$APP_BUNDLE" ]; then
+        log "Launching app bundle: $APP_BUNDLE"
+        # Use open so LaunchServices loads the bundle with its identifier and sandboxed prefs
+        open -n "$APP_BUNDLE"
         sleep 2
 
         if pgrep -x "$APP_NAME" > /dev/null; then

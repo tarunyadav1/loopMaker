@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 /// Global application state
 @MainActor
@@ -31,26 +30,32 @@ public final class AppState: ObservableObject {
     // MARK: - Library State
     @Published var tracks: [Track] = []
     @Published var selectedTrack: Track?
+    @Published var lastGeneratedTrack: Track?
     @Published var searchQuery = ""
-
-    // MARK: - Playback State
-    @Published var isPlaying = false
-    @Published var playbackProgress: Double = 0
 
     // MARK: - Services
     private var generationTask: Task<Void, Never>?
     private let pythonBackend = PythonBackendService()
     let audioPlayer = AudioPlayer()
+    let licenseService = LicenseService.shared
 
     // MARK: - Backend Status
     @Published var backendConnected = false
     @Published var backendError: String?
+
+    // MARK: - License
+
+    /// Whether the current user has a Pro license
+    var isProUser: Bool { licenseService.licenseState.isPro }
 
     // MARK: - Initialization
 
     public init() {
         // Register as shared instance for app-level access
         registerAsShared()
+
+        // Restore persisted model download states before backend check
+        restoreModelDownloadStates()
 
         // Start backend automatically on launch
         Task {
@@ -81,16 +86,31 @@ public final class AppState: ObservableObject {
         }
     }
 
-    /// Check model download status from backend
+    /// Check model download status from backend.
+    /// Merges with persisted state: backend confirmation of "downloaded" always wins,
+    /// but backend "not downloaded" only downgrades if we didn't have a persisted state.
     private func checkModelStatus() async {
         do {
             let status = try await pythonBackend.getModelStatus()
             for (model, isDownloaded) in status {
-                modelDownloadStates[model] = isDownloaded ? .downloaded : .notDownloaded
+                if isDownloaded {
+                    // Backend confirms downloaded - always trust this
+                    modelDownloadStates[model] = .downloaded
+                } else {
+                    // Backend says not downloaded - only downgrade if we don't
+                    // already have a persisted .downloaded state. The backend may
+                    // not recognize models cached in HuggingFace/transformers paths.
+                    let current = modelDownloadStates[model] ?? .notDownloaded
+                    if !current.isDownloaded {
+                        modelDownloadStates[model] = .notDownloaded
+                    }
+                }
             }
+            persistModelDownloadStates()
             backendError = nil
         } catch {
-            backendError = "Could not fetch model status"
+            // Network error fetching status - keep persisted states, don't wipe them
+            Log.app.warning("Could not fetch model status from backend: \(error.localizedDescription)")
         }
     }
 
@@ -121,7 +141,18 @@ public final class AppState: ObservableObject {
     var canGenerate: Bool {
         guard backendConnected else { return false }
         guard let state = modelDownloadStates[selectedModel] else { return false }
+
+        // Pro model check
+        if selectedModel.requiresPro && !isProUser {
+            return false
+        }
+
         return state.isDownloaded && !isGenerating
+    }
+
+    /// Check if a model is accessible (either free or user is Pro)
+    func isModelAccessible(_ model: ModelType) -> Bool {
+        !model.requiresPro || isProUser
     }
 
     // MARK: - Actions
@@ -143,8 +174,11 @@ public final class AppState: ObservableObject {
                     }
                 }
 
+                generationProgress = 1
                 tracks.insert(track, at: 0)
                 selectedTrack = track
+                lastGeneratedTrack = track
+                playTrack(track)
                 generationStatus = "Complete!"
             } catch {
                 generationStatus = "Error: \(error.localizedDescription)"
@@ -175,6 +209,7 @@ public final class AppState: ObservableObject {
                     }
                 }
                 modelDownloadStates[model] = .downloaded
+                persistModelDownloadStates()
             } catch {
                 modelDownloadStates[model] = .error(error.localizedDescription)
             }
@@ -182,9 +217,15 @@ public final class AppState: ObservableObject {
     }
 
     func deleteTrack(_ track: Track) {
+        if audioPlayer.isCurrentTrack(track.audioURL) {
+            stopPlayback()
+        }
         tracks.removeAll { $0.id == track.id }
         if selectedTrack?.id == track.id {
             selectedTrack = nil
+        }
+        if lastGeneratedTrack?.id == track.id {
+            lastGeneratedTrack = nil
         }
         // Clean up audio file
         try? FileManager.default.removeItem(at: track.audioURL)
@@ -193,6 +234,16 @@ public final class AppState: ObservableObject {
     func toggleFavorite(_ track: Track) {
         if let index = tracks.firstIndex(where: { $0.id == track.id }) {
             tracks[index].isFavorite.toggle()
+
+            let updatedTrack = tracks[index]
+
+            if selectedTrack?.id == updatedTrack.id {
+                selectedTrack = updatedTrack
+            }
+
+            if lastGeneratedTrack?.id == updatedTrack.id {
+                lastGeneratedTrack = updatedTrack
+            }
         }
     }
 
@@ -200,36 +251,51 @@ public final class AppState: ObservableObject {
 
     func playTrack(_ track: Track) {
         selectedTrack = track
+        lastGeneratedTrack = track
         audioPlayer.play(url: track.audioURL)
-        isPlaying = true
     }
 
     func togglePlayPause() {
-        guard let track = selectedTrack else { return }
-        if isPlaying {
+        let activeTrack = selectedTrack ?? lastGeneratedTrack
+        guard let track = activeTrack else { return }
+        if audioPlayer.isPlaying {
             audioPlayer.pause()
-            isPlaying = false
         } else {
             audioPlayer.play(url: track.audioURL)
-            isPlaying = true
         }
     }
 
     func stopPlayback() {
         audioPlayer.stop()
-        isPlaying = false
-        playbackProgress = 0
     }
 
     func seekPlayback(to position: Double) {
         audioPlayer.seek(to: position)
-        playbackProgress = position
     }
 
-    /// Sync playback state from audio player
-    func syncPlaybackState() {
-        isPlaying = audioPlayer.isPlaying
-        playbackProgress = audioPlayer.progress
+    // MARK: - Model State Persistence
+
+    private static let modelStatesKey = "com.loopmaker.modelDownloadStates"
+
+    private func persistModelDownloadStates() {
+        var dict: [String: Bool] = [:]
+        for (model, state) in modelDownloadStates {
+            if case .downloaded = state {
+                dict[model.rawValue] = true
+            }
+        }
+        UserDefaults.standard.set(dict, forKey: Self.modelStatesKey)
+    }
+
+    private func restoreModelDownloadStates() {
+        guard let dict = UserDefaults.standard.dictionary(forKey: Self.modelStatesKey) as? [String: Bool] else {
+            return
+        }
+        for (key, isDownloaded) in dict where isDownloaded {
+            if let model = ModelType(rawValue: key) {
+                modelDownloadStates[model] = .downloaded
+            }
+        }
     }
 }
 

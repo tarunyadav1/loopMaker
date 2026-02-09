@@ -20,22 +20,7 @@ struct GlassCard<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .background(
-                ZStack {
-                    // Blur effect
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
-
-                    // Gradient overlay
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(Theme.glassGradient)
-
-                    // Border
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .strokeBorder(Theme.glassBorder, lineWidth: 1)
-                }
-            )
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
     }
 }
 
@@ -46,19 +31,7 @@ struct GlassBackgroundModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
-
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(Theme.glassGradient)
-
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .strokeBorder(Theme.glassBorder, lineWidth: 1)
-                }
-            )
+            .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
     }
 }
 

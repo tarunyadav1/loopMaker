@@ -50,21 +50,18 @@ struct GlassTextField: View {
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                    .fill(.ultraThinMaterial)
-                    .environment(\.colorScheme, .dark)
-
-                RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                    .fill(Theme.glassGradient)
-
-                RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                    .strokeBorder(
-                        isFocused ? Theme.accentPrimary.opacity(0.5) : Theme.glassBorder,
-                        lineWidth: isFocused ? 2 : 1
-                    )
-            }
+        .glassEffect(
+            isFocused
+                ? .regular.tint(Theme.accentPrimary.opacity(0.1)).interactive()
+                : .regular,
+            in: .rect(cornerRadius: Spacing.radiusMd)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .strokeBorder(
+                    isFocused ? Theme.accentPrimary.opacity(0.5) : Color.clear,
+                    lineWidth: isFocused ? 2 : 1
+                )
         )
         .onHover { hovering in
             isHovered = hovering

@@ -4,10 +4,7 @@ import SwiftUI
 
 struct PlayerBar: View {
     let track: Track?
-    let isPlaying: Bool
-    let progress: Double
-    var currentTime: String = "0:00"
-    var duration: String = "0:00"
+    @ObservedObject var audioPlayer: AudioPlayer
     var onPlayPause: () -> Void = {}
     var onPrevious: () -> Void = {}
     var onNext: () -> Void = {}
@@ -70,8 +67,8 @@ struct PlayerBar: View {
                     // Progress fill
                     Rectangle()
                         .fill(Theme.accentGradient)
-                        .frame(width: geometry.size.width * max(0, min(1, progress)))
-                        .animation(.linear(duration: 0.1), value: progress)
+                        .frame(width: geometry.size.width * max(0, min(1, audioPlayer.progress)))
+                        .animation(.linear(duration: 0.1), value: audioPlayer.progress)
 
                     // Hover indicator
                     if isHoveringProgress {
@@ -166,7 +163,7 @@ struct PlayerBar: View {
 
             // Play/Pause
             PlayerControlButton(
-                icon: isPlaying ? "pause.fill" : "play.fill",
+                icon: audioPlayer.isPlaying ? "pause.fill" : "play.fill",
                 size: .large,
                 isPrimary: true,
                 action: onPlayPause
@@ -211,6 +208,14 @@ struct PlayerBar: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private var currentTime: String {
+        audioPlayer.currentTimeFormatted
+    }
+
+    private var duration: String {
+        audioPlayer.durationFormatted
     }
 }
 
@@ -282,10 +287,7 @@ struct PlayerControlButton: View {
                 audioURL: URL(fileURLWithPath: "/tmp/test.wav"),
                 title: "Sunset Vibes"
             ),
-            isPlaying: true,
-            progress: 0.35,
-            currentTime: "0:10",
-            duration: "0:30"
+            audioPlayer: AudioPlayer()
         )
     }
     .background(Theme.background)

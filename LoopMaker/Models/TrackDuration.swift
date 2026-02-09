@@ -41,6 +41,12 @@ public enum TrackDuration: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Whether this duration requires a Pro license
+    public var requiresPro: Bool {
+        // TODO: Re-enable Pro gating before release
+        return false
+    }
+
     /// Check if this duration is compatible with a given model
     public func isCompatible(with model: ModelType) -> Bool {
         seconds <= model.maxDurationSeconds
