@@ -5,8 +5,8 @@ public enum TrackDuration: String, CaseIterable, Codable, Sendable {
     case short      // 10s
     case medium     // 30s
     case long       // 60s
-    case extended   // 120s - ACE-Step only
-    case maximum    // 240s - ACE-Step only
+    case extended   // 120s
+    case maximum    // 240s
 
     /// Duration in seconds
     public var seconds: Int {

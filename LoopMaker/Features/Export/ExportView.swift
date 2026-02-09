@@ -18,9 +18,6 @@ struct ExportView: View {
                 // Format Selection
                 formatSection
 
-                // Licensing Notice
-                LicensingNoticeView()
-
                 Spacer()
 
                 // Export Button
@@ -62,7 +59,6 @@ struct ExportView: View {
 
                 HStack {
                     Label(track.duration.displayName, systemImage: "clock")
-                    Label(track.model.displayName, systemImage: "cpu")
                 }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -155,7 +151,7 @@ struct ExportView: View {
     ExportView(track: Track(
         prompt: "Chill lo-fi beats with vinyl crackle",
         duration: .medium,
-        model: .small,
+        model: .acestep,
         audioURL: URL(fileURLWithPath: "/tmp/test.wav")
     ))
 }

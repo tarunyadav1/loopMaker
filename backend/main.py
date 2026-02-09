@@ -1,6 +1,6 @@
 """
 LoopMaker Python Backend
-FastAPI server for MusicGen and ACE-Step v1.5 audio generation
+FastAPI server for ACE-Step v1.5 audio generation
 """
 
 import asyncio
@@ -11,7 +11,6 @@ import queue
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -35,7 +34,7 @@ import scipy.io.wavfile as wavfile
 
 app = FastAPI(
     title="LoopMaker Backend",
-    description="AI Music Generation API powered by MusicGen and ACE-Step v1.5",
+    description="AI Music Generation API powered by ACE-Step v1.5",
     version="2.0.0"
 )
 
@@ -73,15 +72,9 @@ def _clear_mps_cache():
 
 # MARK: - Model Registry
 
-class ModelFamily(str, Enum):
-    MUSICGEN = "musicgen"
-    ACESTEP = "acestep"
-
-
 @dataclass
 class ModelInfo:
     hf_name: str
-    family: ModelFamily
     size_gb: float
     min_ram_gb: int
     max_duration: int
@@ -89,18 +82,11 @@ class ModelInfo:
 
 
 MODEL_REGISTRY = {
-    "small": ModelInfo("facebook/musicgen-small", ModelFamily.MUSICGEN, 1.2, 8, 60, False),
-    "medium": ModelInfo("facebook/musicgen-medium", ModelFamily.MUSICGEN, 6.0, 16, 60, False),
-    "acestep": ModelInfo("ACE-Step/acestep-v15-turbo", ModelFamily.ACESTEP, 5.0, 8, 240, True),
+    "acestep": ModelInfo("ACE-Step/acestep-v15-turbo", 5.0, 8, 240, True),
 }
-
-# Backwards compatibility
-MODEL_NAMES = {k: v.hf_name for k, v in MODEL_REGISTRY.items() if v.family == ModelFamily.MUSICGEN}
 
 
 # MARK: - Model Caches
-
-models: dict = {}          # MusicGen MLX models
 
 # ACE-Step v1.5 handlers (separate DiT + LM architecture)
 _acestep_dit_handler = None
@@ -121,9 +107,8 @@ TRACKS_DIR.mkdir(parents=True, exist_ok=True)
 class GenerationRequest(BaseModel):
     prompt: str
     duration: int = 30  # seconds
-    model: str = "small"
+    model: str = "acestep"
     seed: Optional[int] = None
-    # ACE-Step specific
     lyrics: Optional[str] = None
     quality_mode: str = "fast"  # "draft" (4 steps), "fast" (8 steps), or "quality" (50 steps)
     guidance_scale: float = 7.0  # v1.5 default (was 15.0 in v1)
@@ -142,7 +127,7 @@ class DownloadRequest(BaseModel):
 # MARK: - Device Detection
 
 def get_device() -> str:
-    """Detect optimal device for inference (ACE-Step uses PyTorch, MusicGen uses MLX/Metal)."""
+    """Detect optimal device for inference (ACE-Step uses PyTorch for DiT, MLX for LM)."""
     if torch.cuda.is_available():
         return "cuda"
     elif torch.backends.mps.is_available():
@@ -151,21 +136,6 @@ def get_device() -> str:
 
 
 # MARK: - Model Loaders
-
-def load_musicgen_model(model_name: str):
-    """Load MusicGen model via MLX if not already loaded."""
-    if model_name not in models:
-        from mlx_musicgen import MusicGen
-
-        hf_name = MODEL_NAMES.get(model_name)
-        if not hf_name:
-            raise ValueError(f"Unknown MusicGen model: {model_name}")
-
-        print(f"Loading MusicGen MLX model: {hf_name}")
-        models[model_name] = MusicGen.from_pretrained(hf_name)
-
-    return models[model_name]
-
 
 def _ensure_acestep_weights_downloaded():
     """Ensure ACE-Step model weights are actually downloaded.
@@ -303,7 +273,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "models_loaded": list(models.keys()) + (["acestep"] if _acestep_initialized else []),
+        "models_loaded": ["acestep"] if _acestep_initialized else [],
         "device": get_device()
     }
 
@@ -316,12 +286,11 @@ async def get_model_status():
     status = {}
     for name, info in MODEL_REGISTRY.items():
         cache_path = MODEL_CACHE_DIR / name
-        is_loaded = name in models or (name == "acestep" and _acestep_initialized)
+        is_loaded = name == "acestep" and _acestep_initialized
 
         status[name] = {
             "downloaded": cache_path.exists() or is_loaded,
             "loaded": is_loaded,
-            "family": info.family.value,
             "size_gb": info.size_gb,
             "max_duration": info.max_duration,
             "supports_lyrics": info.supports_lyrics,
@@ -343,58 +312,34 @@ async def download_model(request: DownloadRequest):
         try:
             yield f'{{"status": "downloading", "progress": 0.1}}\n'
 
-            if model_info.family == ModelFamily.MUSICGEN:
-                # Download and load MusicGen via MLX — run in thread to avoid blocking
-                yield f'{{"status": "downloading", "progress": 0.2, "message": "Downloading MusicGen model..."}}\n'
+            # Download ACE-Step v1.5 — run in thread to avoid blocking event loop
+            yield f'{{"status": "downloading", "progress": 0.15, "message": "Initializing ACE-Step v1.5 download..."}}\n'
 
-                loop = asyncio.get_event_loop()
-                load_future = loop.run_in_executor(
-                    _executor,
-                    lambda: load_musicgen_model(request.model),
-                )
+            loop = asyncio.get_event_loop()
+            load_future = loop.run_in_executor(
+                _executor,
+                load_acestep_model,
+            )
 
-                # Send keepalive progress while download runs
-                tick = 0
-                while not load_future.done():
-                    await asyncio.sleep(3)
-                    tick += 1
-                    # Slowly ramp progress from 0.2 to 0.75 during download
-                    progress = min(0.2 + tick * 0.02, 0.75)
-                    yield f'{{"status": "downloading", "progress": {progress:.2f}, "message": "Downloading MusicGen model..."}}\n'
+            # Send keepalive progress updates every 5 seconds while model downloads
+            # ACE-Step downloads ~5GB (28 files) which can take 5-30 minutes
+            tick = 0
+            while not load_future.done():
+                await asyncio.sleep(5)
+                tick += 1
+                # Slowly ramp progress from 0.15 to 0.75 over ~30 minutes (360 ticks)
+                progress = min(0.15 + tick * 0.005, 0.75)
+                elapsed_min = tick * 5 / 60
+                yield f'{{"status": "downloading", "progress": {progress:.3f}, "message": "Downloading ACE-Step v1.5 model ({elapsed_min:.1f} min elapsed)..."}}\n'
 
-                # Raise any exceptions from the thread
+            # Check for errors from the thread
+            try:
                 load_future.result()
-                yield f'{{"status": "downloading", "progress": 0.8}}\n'
+            except ImportError as e:
+                yield f'{{"status": "error", "error": "{str(e)}"}}\n'
+                return
 
-            elif model_info.family == ModelFamily.ACESTEP:
-                # Download ACE-Step v1.5 — run in thread to avoid blocking event loop
-                yield f'{{"status": "downloading", "progress": 0.15, "message": "Initializing ACE-Step v1.5 download..."}}\n'
-
-                loop = asyncio.get_event_loop()
-                load_future = loop.run_in_executor(
-                    _executor,
-                    load_acestep_model,
-                )
-
-                # Send keepalive progress updates every 5 seconds while model downloads
-                # ACE-Step downloads ~5GB (28 files) which can take 5-30 minutes
-                tick = 0
-                while not load_future.done():
-                    await asyncio.sleep(5)
-                    tick += 1
-                    # Slowly ramp progress from 0.15 to 0.75 over ~30 minutes (360 ticks)
-                    progress = min(0.15 + tick * 0.005, 0.75)
-                    elapsed_min = tick * 5 / 60
-                    yield f'{{"status": "downloading", "progress": {progress:.3f}, "message": "Downloading ACE-Step v1.5 model ({elapsed_min:.1f} min elapsed)..."}}\n'
-
-                # Check for errors from the thread
-                try:
-                    load_future.result()
-                except ImportError as e:
-                    yield f'{{"status": "error", "error": "{str(e)}"}}\n'
-                    return
-
-                yield f'{{"status": "downloading", "progress": 0.85, "message": "Model loaded successfully"}}\n'
+            yield f'{{"status": "downloading", "progress": 0.85, "message": "Model loaded successfully"}}\n'
 
             yield f'{{"status": "complete", "progress": 1.0}}\n'
 
@@ -412,7 +357,7 @@ async def download_model(request: DownloadRequest):
 
 @app.post("/generate", response_model=GenerationResponse)
 async def generate_music(request: GenerationRequest):
-    """Generate music from text prompt - routes to appropriate model family"""
+    """Generate music from text prompt"""
     model_info = MODEL_REGISTRY.get(request.model)
     if not model_info:
         raise HTTPException(status_code=400, detail=f"Unknown model: {request.model}")
@@ -423,143 +368,12 @@ async def generate_music(request: GenerationRequest):
             detail=f"Max duration for {request.model} is {model_info.max_duration}s, got {request.duration}s"
         )
 
-    if model_info.family == ModelFamily.MUSICGEN:
-        return await generate_musicgen_http(request)
-    else:
-        return await generate_acestep_http(request)
+    return await generate_acestep_http(request)
 
 
 ProgressCallback = Callable[[float, str], None]
 
 _executor = ThreadPoolExecutor(max_workers=2)
-
-
-def _generate_musicgen_sync(
-    request: GenerationRequest,
-    progress_cb: ProgressCallback,
-) -> GenerationResponse:
-    """Synchronous MusicGen generation via MLX with progress callbacks.
-
-    For durations > 30s, uses chunked generation with overlap-add crossfade
-    to maintain quality within MusicGen's ~1500-token context window.
-    """
-    import mlx.core as mx
-
-    progress_cb(0.05, "Loading model...")
-    model = load_musicgen_model(request.model)
-
-    # Set seed for reproducibility
-    if request.seed is not None:
-        mx.random.seed(request.seed)
-        np.random.seed(request.seed)
-
-    # ~50 steps per second of audio
-    STEPS_PER_SEC = 50
-    max_steps = int(request.duration * STEPS_PER_SEC)
-    chunk_steps = 1500  # 30s - MusicGen's coherent context window
-
-    sample_rate = model.sampling_rate
-
-    if max_steps <= chunk_steps:
-        # --- Single chunk: simple generation ---
-        progress_cb(0.15, "Generating audio (MLX)...")
-
-        def step_progress(step: int, total: int):
-            frac = step / total
-            mapped = 0.15 + frac * 0.70
-            secs_done = step / STEPS_PER_SEC
-            secs_total = total / STEPS_PER_SEC
-            progress_cb(mapped, f"Generating audio... {secs_done:.0f}s / {secs_total:.0f}s")
-
-        audio = model.generate(
-            request.prompt,
-            max_steps=max_steps,
-            top_k=250,
-            temp=1.0,
-            guidance_coef=3.0,
-            progress_callback=step_progress,
-        )
-        audio_data = np.array(audio).flatten()
-
-    else:
-        # --- Multi-chunk: overlap-add crossfade ---
-        overlap_secs = 5
-        overlap_steps = overlap_secs * STEPS_PER_SEC  # 250 steps
-        overlap_samples = overlap_secs * sample_rate
-
-        # Plan chunks: first = full 30s, subsequent = 30s with 5s overlap
-        new_steps_per_chunk = chunk_steps - overlap_steps  # 1250 = 25s of new audio
-        extra_steps = max_steps - chunk_steps
-        num_extra = max(1, -(-extra_steps // new_steps_per_chunk))  # ceil division
-        total_chunks = 1 + num_extra
-
-        progress_cb(0.15, f"Generating in {total_chunks} chunks with crossfade...")
-        waveforms = []
-        global_steps_done = 0
-
-        for chunk_idx in range(total_chunks):
-            # Determine steps for this chunk
-            if chunk_idx == 0:
-                steps = chunk_steps
-            else:
-                remaining = max_steps - global_steps_done
-                # Generate a full chunk (30s) but only overlap_steps overlap with prev
-                steps = min(chunk_steps, remaining + overlap_steps)
-
-            def make_progress(ci=chunk_idx, tc=total_chunks, gsd=global_steps_done):
-                def _progress(step: int, total: int):
-                    overall = (gsd + step) / max_steps
-                    mapped = 0.15 + min(overall, 1.0) * 0.70
-                    secs = step / STEPS_PER_SEC
-                    progress_cb(mapped, f"Chunk {ci + 1}/{tc}: {secs:.0f}s / {total / STEPS_PER_SEC:.0f}s")
-                return _progress
-
-            chunk_audio = model.generate(
-                request.prompt,
-                max_steps=steps,
-                top_k=250,
-                temp=1.0,
-                guidance_coef=3.0,
-                progress_callback=make_progress(),
-            )
-            waveforms.append(np.array(chunk_audio).flatten())
-
-            if chunk_idx == 0:
-                global_steps_done += steps
-            else:
-                global_steps_done += steps - overlap_steps
-
-        # Crossfade overlapping regions
-        progress_cb(0.87, "Crossfading chunks...")
-        audio_data = waveforms[0]
-        for w in waveforms[1:]:
-            xfade_len = min(overlap_samples, len(audio_data), len(w))
-            fade_out = np.linspace(1.0, 0.0, xfade_len, dtype=np.float32)
-            fade_in = np.linspace(0.0, 1.0, xfade_len, dtype=np.float32)
-            tail = audio_data[-xfade_len:].astype(np.float32)
-            head = w[:xfade_len].astype(np.float32)
-            crossfaded = tail * fade_out + head * fade_in
-            audio_data = np.concatenate([audio_data[:-xfade_len], crossfaded, w[xfade_len:]])
-
-    progress_cb(0.90, "Processing audio...")
-
-    # Normalize audio
-    max_val = np.max(np.abs(audio_data))
-    if max_val > 0:
-        audio_data = audio_data / max_val * 0.95
-
-    # Convert to int16 for WAV
-    audio_int16 = (audio_data * 32767).astype(np.int16)
-
-    # Write WAV directly to shared tracks directory
-    output_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
-    wavfile.write(str(output_path), sample_rate, audio_int16)
-
-    return GenerationResponse(
-        audio_path=str(output_path),
-        sample_rate=sample_rate,
-        duration=len(audio_data) / sample_rate,
-    )
 
 
 def _generate_acestep_sync(
@@ -703,20 +517,6 @@ def _generate_acestep_sync(
         _clear_mps_cache()
 
 
-async def generate_musicgen_http(request: GenerationRequest) -> GenerationResponse:
-    """Generate music using MusicGen model (HTTP wrapper)."""
-    try:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            _executor,
-            _generate_musicgen_sync,
-            request,
-            lambda p, m: None,  # No-op progress for HTTP
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 async def generate_acestep_http(request: GenerationRequest) -> GenerationResponse:
     """Generate music using ACE-Step v1.5 model (HTTP wrapper)."""
     try:
@@ -768,17 +568,11 @@ async def ws_generate(websocket: WebSocket):
         def progress_cb(progress: float, message: str):
             progress_queue.put(("progress", progress, message))
 
-        # 3. Choose generator based on model family
-        if model_info.family == ModelFamily.MUSICGEN:
-            gen_fn = _generate_musicgen_sync
-        else:
-            gen_fn = _generate_acestep_sync
-
-        # 4. Run generation in thread pool
+        # 3. Run generation in thread pool
         loop = asyncio.get_event_loop()
-        gen_future = loop.run_in_executor(_executor, gen_fn, request, progress_cb)
+        gen_future = loop.run_in_executor(_executor, _generate_acestep_sync, request, progress_cb)
 
-        # 5. Forward progress messages and send heartbeats while waiting
+        # 4. Forward progress messages and send heartbeats while waiting
         while True:
             # Check for progress messages (non-blocking)
             try:
@@ -800,7 +594,7 @@ async def ws_generate(websocket: WebSocket):
             await websocket.send_json({"type": "heartbeat"})
             await asyncio.sleep(2)
 
-        # 6. Drain any remaining progress messages
+        # 5. Drain any remaining progress messages
         try:
             while True:
                 msg_type, progress, message = progress_queue.get_nowait()
@@ -812,7 +606,7 @@ async def ws_generate(websocket: WebSocket):
         except queue.Empty:
             pass
 
-        # 7. Get result or propagate error
+        # 6. Get result or propagate error
         result: GenerationResponse = gen_future.result()
 
         await websocket.send_json({
@@ -839,21 +633,13 @@ async def delete_model(model_name: str):
     """Unload a model from memory"""
     global _acestep_dit_handler, _acestep_llm_handler, _acestep_initialized
 
-    deleted = False
-
-    if model_name in models:
-        del models[model_name]
-        deleted = True
-
     if model_name == "acestep" and _acestep_initialized:
         _acestep_dit_handler = None
         _acestep_llm_handler = None
         _acestep_initialized = False
         _clear_mps_cache()
-        deleted = True
-
-    if deleted:
         return {"status": "deleted", "model": model_name}
+
     return {"status": "not_loaded", "model": model_name}
 
 

@@ -485,8 +485,6 @@ struct LicenseEntryView: View {
                     .textCase(.uppercase)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    featureRow("Medium MusicGen model for better quality")
-                    featureRow("ACE-Step model with lyrics support")
                     featureRow("Extended durations up to 240s")
                     featureRow("Priority support via email")
                 }

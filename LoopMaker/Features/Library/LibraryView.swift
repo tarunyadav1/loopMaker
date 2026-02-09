@@ -274,7 +274,7 @@ struct TrackGridItem: View {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
 
-                    Text("\(track.duration.displayName) \u{2022} \(track.model.displayName)")
+                    Text(track.duration.displayName)
                         .font(Typography.caption)
                         .foregroundStyle(Theme.textTertiary)
                 }
@@ -445,6 +445,28 @@ struct FavoritesView: View {
                                     appState.playTrack(track)
                                 }
                             )
+                            .contextMenu {
+                                Button {
+                                    appState.toggleFavorite(track)
+                                } label: {
+                                    Label("Remove from Favorites", systemImage: "heart.slash")
+                                }
+
+                                Button {
+                                    appState.selectedTrack = track
+                                    appState.showExport = true
+                                } label: {
+                                    Label("Export...", systemImage: "square.and.arrow.up")
+                                }
+
+                                Divider()
+
+                                Button(role: .destructive) {
+                                    appState.deleteTrack(track)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, Spacing.lg)

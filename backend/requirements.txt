@@ -6,13 +6,13 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
-# ML/AI - MLX for MusicGen (Metal GPU), PyTorch for ACE-Step v1.5
+# ML/AI - MLX for ACE-Step LM backend on macOS, PyTorch for ACE-Step v1.5 DiT
 mlx>=0.25.2
 mlx-lm>=0.20.0
 huggingface_hub
 torch>=2.9.1
 torchaudio>=2.9.1
-transformers>=4.40.0  # needed for T5 tokenizer (MLX MusicGen) and ACE-Step
+transformers>=4.40.0  # needed for ACE-Step tokenizer/embeddings
 scipy>=1.11.0
 numpy>=1.24.0
 

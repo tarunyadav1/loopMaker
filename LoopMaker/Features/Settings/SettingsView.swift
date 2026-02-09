@@ -7,7 +7,6 @@ struct SettingsView: View {
 
     enum SettingsTab: String, CaseIterable {
         case general = "General"
-        case models = "Models"
         case updates = "Updates"
         case license = "License"
         case about = "About"
@@ -15,7 +14,6 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .general: return "gearshape"
-            case .models: return "cpu"
             case .updates: return "arrow.triangle.2.circlepath"
             case .license: return "star.circle"
             case .about: return "info.circle"
@@ -39,7 +37,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(DesignSystem.Colors.background)
         .animation(.easeInOut(duration: 0.2), value: selectedTab)
     }
 
@@ -53,7 +51,7 @@ struct SettingsView: View {
                 }
             }
             .padding(4)
-            .glassEffect(in: .capsule)
+            .glassEffect(.regular.tint(DesignSystem.Colors.accent), in: .capsule)
         }
     }
 
@@ -103,8 +101,6 @@ struct SettingsView: View {
                 switch selectedTab {
                 case .general:
                     generalSection
-                case .models:
-                    modelsSection
                 case .updates:
                     updatesSection
                 case .license:
@@ -119,7 +115,6 @@ struct SettingsView: View {
     private var tabDescription: String {
         switch selectedTab {
         case .general: return "Storage and playback preferences"
-        case .models: return "Manage AI model downloads"
         case .updates: return "Check for app updates"
         case .license: return "Manage your LoopMaker Pro license"
         case .about: return "Version info and legal"
@@ -166,22 +161,6 @@ struct SettingsView: View {
                 }
             }
 
-            // Model Licensing
-            settingsCard {
-                LicensingNoticeView()
-            }
-        }
-    }
-
-    // MARK: - Models Section
-
-    private var modelsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(ModelType.allCases, id: \.self) { model in
-                settingsCard {
-                    ModelRow(model: model)
-                }
-            }
         }
     }
 
@@ -274,11 +253,7 @@ struct SettingsView: View {
     }
 
     private func clearAllTracks() {
-        for track in appState.tracks {
-            try? FileManager.default.removeItem(at: track.audioURL)
-        }
-        appState.tracks.removeAll()
-        appState.selectedTrack = nil
+        appState.clearAllTracks()
     }
 }
 
@@ -338,113 +313,6 @@ struct UpdatesSettingsContent: View {
             }
             .buttonStyle(.plain)
             .disabled(!updateService.canCheckForUpdates)
-        }
-    }
-}
-
-// MARK: - Model Row
-
-struct ModelRow: View {
-    @EnvironmentObject var appState: AppState
-    let model: ModelType
-
-    var downloadState: ModelDownloadState {
-        appState.modelDownloadStates[model] ?? .notDownloaded
-    }
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(model.displayName)
-                        .font(.system(size: 14, weight: .semibold))
-
-                    if model.requiresPro {
-                        ProBadge()
-                    }
-                }
-
-                Text("\(model.parameters) parameters \u{2022} \(model.sizeFormatted)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if model.requiresPro && !appState.isProUser {
-                Label("Pro", systemImage: "lock.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.orange)
-            } else {
-                downloadStateView
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var downloadStateView: some View {
-        switch downloadState {
-        case .notDownloaded:
-            Button("Download") {
-                appState.downloadModel(model)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-        case .downloading(let progress):
-            HStack(spacing: 8) {
-                ProgressView(value: progress)
-                    .frame(width: 80)
-                Text("\(Int(progress * 100))%")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-
-        case .downloaded:
-            Label("Downloaded", systemImage: "checkmark.circle.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.green)
-
-        case .error:
-            VStack(alignment: .trailing) {
-                Label("Error", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red)
-                Button("Retry") {
-                    appState.downloadModel(model)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-            }
-        }
-    }
-}
-
-// MARK: - Licensing Notice
-
-struct LicensingNoticeView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Non-Commercial Use Only", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.orange)
-
-            Text("""
-                Generated music uses Meta's MusicGen model (CC-BY-NC 4.0).
-
-                You MAY use for:
-                \u{2022} Personal projects
-                \u{2022} Educational content
-                \u{2022} Non-monetized videos
-
-                You may NOT use for:
-                \u{2022} Monetized YouTube/TikTok
-                \u{2022} Commercial podcasts
-                \u{2022} Paid client work
-                \u{2022} Commercial products
-                """)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
         }
     }
 }

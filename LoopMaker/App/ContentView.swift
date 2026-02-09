@@ -8,15 +8,12 @@ struct MainWindow: View {
     @State private var selectedTab: SidebarTab = .home
     @State private var selectedContentTab: ContentTab = .generate
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var searchText: String = ""
-    @State private var isSearching: Bool = false
 
     // MARK: - Sidebar Tabs
 
     enum SidebarTab: String, CaseIterable, Identifiable {
         case home = "Home"
         case library = "Library"
-        case feedback = "Feedback"
         case settings = "Settings"
 
         var id: String { rawValue }
@@ -25,7 +22,6 @@ struct MainWindow: View {
             switch self {
             case .home: return "house"
             case .library: return "music.note.list"
-            case .feedback: return "bubble.left"
             case .settings: return "gearshape"
             }
         }
@@ -34,13 +30,12 @@ struct MainWindow: View {
             switch self {
             case .home: return "house.fill"
             case .library: return "music.note.list"
-            case .feedback: return "bubble.left.fill"
             case .settings: return "gearshape.fill"
             }
         }
 
         static var mainTabs: [SidebarTab] { [.home, .library] }
-        static var bottomTabs: [SidebarTab] { [.feedback, .settings] }
+        static var bottomTabs: [SidebarTab] { [.settings] }
     }
 
     // MARK: - Content Tabs (shown inside Home)
@@ -48,7 +43,6 @@ struct MainWindow: View {
     enum ContentTab: String, CaseIterable {
         case generate = "Generate"
         case favorites = "Favorites"
-        case export = "Export"
     }
 
     // MARK: - Body
@@ -142,7 +136,6 @@ struct MainWindow: View {
             // Bottom section
             GlassEffectContainer {
                 VStack(spacing: 2) {
-                    sidebarButton(.feedback)
                     sidebarButton(.settings)
                 }
             }
@@ -174,11 +167,6 @@ struct MainWindow: View {
                     : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8)
             )
-            .shadow(
-                color: selectedTab == tab ? Color.black.opacity(0.06) : Color.clear,
-                radius: 3,
-                y: 1
-            )
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
@@ -191,30 +179,18 @@ struct MainWindow: View {
         switch selectedTab {
         case .home:
             VStack(spacing: 0) {
-                // Header toolbar with glass content tabs
                 headerToolbar
 
-                // Content based on selected content tab
                 switch selectedContentTab {
                 case .generate:
                     GenerationView()
                 case .favorites:
                     FavoritesView()
-                case .export:
-                    if let track = appState.selectedTrack {
-                        ExportView(track: track)
-                    } else {
-                        noTrackSelectedView
-                    }
                 }
             }
-            .background(Color(nsColor: .windowBackgroundColor))
 
         case .library:
             LibraryView()
-
-        case .feedback:
-            FeedbackView()
 
         case .settings:
             SettingsView()
@@ -222,217 +198,58 @@ struct MainWindow: View {
         }
     }
 
-    // MARK: - Header Toolbar (Glass Tabs + Search)
+    // MARK: - Header Toolbar (Glass Tabs)
 
     @Namespace private var headerNamespace
 
     private var headerToolbar: some View {
-        SwiftUI.GlassEffectContainer(spacing: 16) {
-            HStack(spacing: 16) {
-                // Tab pills with Liquid Glass
-                HStack(spacing: 2) {
-                    ForEach(ContentTab.allCases, id: \.self) { tab in
-                        Button {
-                            withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
-                                selectedContentTab = tab
-                            }
-                        } label: {
-                            Text(tab.rawValue)
-                                .font(.system(size: 13, weight: selectedContentTab == tab ? .semibold : .medium))
-                                .foregroundColor(selectedContentTab == tab ? .primary : .secondary)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(
-                                    selectedContentTab == tab
-                                        ? Color.primary.opacity(0.12)
-                                        : Color.clear,
-                                    in: .capsule
-                                )
+        HStack(spacing: 16) {
+            // Tab pills with Liquid Glass
+            HStack(spacing: 2) {
+                ForEach(ContentTab.allCases, id: \.self) { tab in
+                    Button {
+                        withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
+                            selectedContentTab = tab
                         }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .glassEffect(in: .capsule)
-                .glassEffectID("tabs", in: headerNamespace)
-
-                Spacer()
-
-                // Search field with Liquid Glass
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.secondary)
-
-                    if isSearching {
-                        TextField("Search tracks...", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 14))
-                            .frame(minWidth: 180, maxWidth: 240)
-
-                        if !searchText.isEmpty {
-                            Button {
-                                searchText = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.secondary.opacity(0.7))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    } else {
-                        Text("Search")
-                            .font(.system(size: 14))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .glassEffect(.regular.interactive(), in: .capsule)
-                .glassEffectID("search", in: headerNamespace)
-                .onTapGesture {
-                    if !isSearching {
-                        withAnimation(.spring(duration: 0.25)) {
-                            isSearching = true
-                        }
-                    }
-                }
-
-                // Pro badge
-                if licenseService.licenseState.isPro {
-                    HStack(spacing: 4) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                        Text("Pro")
-                            .font(.system(size: 11, weight: .bold))
-                    }
-                    .foregroundColor(DesignSystem.Colors.accent)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .glassEffect(.regular, in: .capsule)
-                }
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
-    }
-
-    // MARK: - Empty States
-
-    private var noTrackSelectedView: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "square.and.arrow.up")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary.opacity(0.5))
-            Text("Select a track to export")
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-            Text("Generate or select a track from your library first")
-                .font(.system(size: 13))
-                .foregroundColor(.secondary)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-// MARK: - Feedback View (Embedded)
-
-struct FeedbackView: View {
-    @State private var feedbackText = ""
-    @State private var feedbackType: FeedbackType = .feature
-    @State private var submitted = false
-
-    enum FeedbackType: String, CaseIterable {
-        case bug = "Bug Report"
-        case feature = "Feature Request"
-        case general = "General Feedback"
-
-        var icon: String {
-            switch self {
-            case .bug: return "ladybug"
-            case .feature: return "lightbulb"
-            case .general: return "text.bubble"
-            }
-        }
-    }
-
-    var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                // Header
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Feedback")
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
-
-                    Text("Help us improve LoopMaker")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                }
-
-                // Type selector
-                HStack(spacing: 8) {
-                    ForEach(FeedbackType.allCases, id: \.self) { type in
-                        Button {
-                            feedbackType = type
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: type.icon)
-                                    .font(.system(size: 12))
-                                Text(type.rawValue)
-                                    .font(.system(size: 12, weight: feedbackType == type ? .semibold : .regular))
-                            }
-                            .foregroundColor(feedbackType == type ? .primary : .secondary)
-                            .padding(.horizontal, 12)
+                    } label: {
+                        Text(tab.rawValue)
+                            .font(.system(size: 13, weight: selectedContentTab == tab ? .semibold : .medium))
+                            .foregroundColor(selectedContentTab == tab ? .primary : .secondary)
+                            .padding(.horizontal, 14)
                             .padding(.vertical, 8)
                             .background(
-                                feedbackType == type
-                                    ? Color.primary.opacity(0.1)
+                                selectedContentTab == tab
+                                    ? Color.primary.opacity(0.12)
                                     : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 8)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                // Text input
-                TextEditor(text: $feedbackText)
-                    .font(.system(size: 14))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 200)
-                    .padding(12)
-                    .background(
-                        Color(nsColor: .controlBackgroundColor),
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
-
-                // Submit
-                HStack {
-                    Spacer()
-                    Button {
-                        NSWorkspace.shared.open(Constants.URLs.helpURL)
-                    } label: {
-                        Text("Send Feedback")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 10)
-                            .background(
-                                DesignSystem.Colors.accent,
-                                in: RoundedRectangle(cornerRadius: 10)
+                                in: .capsule
                             )
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(28)
-            .frame(maxWidth: 700, alignment: .leading)
+            .padding(4)
+            .glassEffect(.regular, in: .capsule)
+            .glassEffectID("tabs", in: headerNamespace)
+
+            Spacer()
+
+            // Pro badge
+            if licenseService.licenseState.isPro {
+                HStack(spacing: 4) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 10))
+                    Text("Pro")
+                        .font(.system(size: 11, weight: .bold))
+                }
+                .foregroundColor(DesignSystem.Colors.accent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .glassEffect(.regular, in: .capsule)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 }
 
@@ -444,7 +261,7 @@ struct SetupOverlay: View {
 
     var body: some View {
         ZStack {
-            // Background
+            // Opaque background for setup overlay
             Color(nsColor: .windowBackgroundColor)
                 .ignoresSafeArea()
 
@@ -456,7 +273,7 @@ struct SetupOverlay: View {
                     Image(systemName: "waveform.circle.fill")
                         .font(.system(size: 72))
                         .foregroundStyle(.linearGradient(
-                            colors: [DesignSystem.Colors.accent, DesignSystem.Colors.accentSecondary],
+                            colors: [DesignSystem.Colors.accent, DesignSystem.Colors.accentHover],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ))

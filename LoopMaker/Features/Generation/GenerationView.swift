@@ -5,190 +5,101 @@ struct GenerationView: View {
     @State private var prompt = ""
     @State private var selectedDuration: TrackDuration = .medium
     @State private var selectedGenreCard: GenreCardData?
-    @State private var selectedGenre: GenrePreset?
     @State private var isInstrumental = true
     @State private var lyrics = ""
     @State private var selectedQualityMode: QualityMode = .fast
+    @State private var suggestions: [SuggestionData] = SuggestionData.randomSet()
+    @State private var showAdvanced = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                // Hero section
-                heroSection
+                // Main creation card: prompt + essential controls + create
+                creationCard
 
-                // Prompt input
-                promptSection
-
-                // Mode toggles
-                modeToggles
-
-                // Lyrics editor (ACE-Step with vocals)
-                if !isInstrumental && appState.selectedModel.supportsLyrics {
-                    lyricsSection
-                }
-
-                // Genre cards
-                GenreCardGrid(
-                    genres: GenreCardData.presets,
-                    selectedGenre: $selectedGenreCard,
-                    onSelect: { genre in
-                        // Map to GenrePreset
-                        selectedGenre = GenrePreset.allPresets.first { $0.name == genre.name }
-                    }
-                )
-
-                // Settings section
-                settingsSection
-
-                // Generate button
-                generateButton
-
-                // Progress section
+                // Progress (when generating)
                 if appState.isGenerating {
                     progressSection
                 }
 
-                Spacer(minLength: Spacing.xxl)
+                // Suggestions (when not generating)
+                if !appState.isGenerating {
+                    suggestionsSection
+                }
             }
             .padding(.horizontal, Spacing.xl)
-            .padding(.top, Spacing.xl)
-        }
-        .background(Theme.background)
-        .onChange(of: appState.selectedModel) { _, newModel in
-            // Adjust duration if current selection is incompatible
-            if !selectedDuration.isCompatible(with: newModel) {
-                selectedDuration = TrackDuration.available(for: newModel).last ?? .medium
-            }
+            .padding(.vertical, Spacing.lg)
         }
     }
 
-    // MARK: - Hero Section
+    // MARK: - Creation Card (prompt + controls + create, all in one card)
 
-    private var heroSection: some View {
-        VStack(spacing: Spacing.sm) {
-            Text("Create something")
-                .heroText()
-
-            Text("new today")
-                .font(Typography.hero)
-                .foregroundStyle(Theme.accentGradient)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Spacing.lg)
-    }
-
-    // MARK: - Prompt Section
-
-    private var promptSection: some View {
-        GlassTextField(
-            text: $prompt,
-            placeholder: "Describe the music you want to create...",
-            icon: "wand.and.stars",
-            submitLabel: "Generate",
-            isEnabled: canGenerate,
-            onSubmit: generate
-        )
-    }
-
-    // MARK: - Mode Toggles
-
-    private var modeToggles: some View {
-        HStack(spacing: Spacing.sm) {
-            ModeToggleButton(
-                title: "Instrumental",
-                icon: "pianokeys",
-                isSelected: isInstrumental,
-                action: { isInstrumental = true }
-            )
-
-            ModeToggleButton(
-                title: "With Lyrics",
-                icon: "music.mic",
-                isSelected: !isInstrumental,
-                isDisabled: !appState.selectedModel.supportsLyrics,
-                action: {
-                    if appState.selectedModel.supportsLyrics {
-                        isInstrumental = false
-                    }
-                }
-            )
-
-            Spacer()
-
-            // Quick actions
-            HStack(spacing: Spacing.sm) {
-                QuickActionButton(icon: "dice", tooltip: "Random prompt") {
-                    prompt = randomPrompts.randomElement() ?? ""
-                }
-
-                QuickActionButton(icon: "clock.arrow.circlepath", tooltip: "Recent") {}
-
-                QuickActionButton(icon: "bookmark", tooltip: "Saved prompts") {}
-            }
-        }
-    }
-
-    // MARK: - Lyrics Section
-
-    private var lyricsSection: some View {
-        GlassCard(padding: Spacing.md, cornerRadius: Spacing.radiusMd) {
+    private var creationCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Prompt area
             VStack(alignment: .leading, spacing: Spacing.sm) {
-                HStack {
-                    Label("Lyrics", systemImage: "music.mic")
-                        .font(Typography.bodyMedium)
-                        .foregroundStyle(Theme.textSecondary)
+                HStack(spacing: 6) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(DesignSystem.Colors.accent)
+
+                    Text("Music Description")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
 
                     Spacer()
 
-                    // Quick structure tags
-                    HStack(spacing: Spacing.xs) {
-                        LyricsTagButton(tag: "[verse]") { insertLyricsTag("[verse]") }
-                        LyricsTagButton(tag: "[chorus]") { insertLyricsTag("[chorus]") }
-                        LyricsTagButton(tag: "[bridge]") { insertLyricsTag("[bridge]") }
+                    if !prompt.isEmpty {
+                        Text("\(prompt.count)")
+                            .font(Typography.caption2)
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
                     }
                 }
 
-                TextEditor(text: $lyrics)
+                TextEditor(text: $prompt)
                     .font(Typography.body)
-                    .foregroundStyle(Theme.textPrimary)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
                     .scrollContentBackground(.hidden)
-                    .frame(minHeight: 100, maxHeight: 200)
-                    .padding(Spacing.sm)
-                    .background(
-                        RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                            .fill(Theme.backgroundTertiary.opacity(0.5))
+                    .frame(minHeight: 72, maxHeight: 120)
+                    .overlay(alignment: .topLeading) {
+                        if prompt.isEmpty {
+                            Text("Describe the music you want to create...")
+                                .font(Typography.body)
+                                .foregroundStyle(DesignSystem.Colors.textMuted)
+                                .padding(.top, 8)
+                                .padding(.leading, 4)
+                                .allowsHitTesting(false)
+                        }
+                    }
+            }
+            .padding(Spacing.md)
+
+            // Divider
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(height: 1)
+
+            // Controls footer: mode + duration + advanced toggle + create
+            VStack(spacing: Spacing.md) {
+                HStack(spacing: Spacing.sm) {
+                    // Instrumental / Lyrics
+                    InlinePill(
+                        title: "Instrumental",
+                        icon: "pianokeys",
+                        isSelected: isInstrumental,
+                        action: { isInstrumental = true }
                     )
 
-                Text("Use [verse], [chorus], [bridge] tags to structure your song")
-                    .font(Typography.caption)
-                    .foregroundStyle(Theme.textTertiary)
-            }
-        }
-    }
-
-    private func insertLyricsTag(_ tag: String) {
-        if lyrics.isEmpty {
-            lyrics = tag + "\n"
-        } else if !lyrics.hasSuffix("\n") {
-            lyrics += "\n" + tag + "\n"
-        } else {
-            lyrics += tag + "\n"
-        }
-    }
-
-    // MARK: - Settings Section
-
-    private var settingsSection: some View {
-        GlassCard(padding: Spacing.md, cornerRadius: Spacing.radiusMd) {
-            VStack(spacing: Spacing.md) {
-                // Duration
-                HStack {
-                    Label("Duration", systemImage: "clock")
-                        .font(Typography.bodyMedium)
-                        .foregroundStyle(Theme.textSecondary)
+                    InlinePill(
+                        title: "Lyrics",
+                        icon: "music.mic",
+                        isSelected: !isInstrumental,
+                        action: { isInstrumental = false }
+                    )
 
                     Spacer()
 
+                    // Duration
                     HStack(spacing: Spacing.xs) {
                         ForEach(availableDurations, id: \.self) { duration in
                             ZStack {
@@ -202,105 +113,166 @@ struct GenerationView: View {
                                     }
                                 )
 
-                                // Pro lock overlay for extended durations
                                 if duration.requiresPro && !appState.isProUser {
                                     FeatureLockOverlay(feature: .extendedDuration)
                                 }
                             }
                         }
                     }
+
+                    // Advanced toggle
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showAdvanced.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 14))
+                            .foregroundStyle(showAdvanced ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(showAdvanced ? DesignSystem.Colors.accent.opacity(0.12) : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("More options")
                 }
 
-                Divider()
-                    .background(Theme.glassBorder)
+                // Advanced options (collapsed by default)
+                if showAdvanced {
+                    advancedOptions
+                }
 
-                // Model
-                HStack {
-                    Label("Model", systemImage: "cpu")
-                        .font(Typography.bodyMedium)
-                        .foregroundStyle(Theme.textSecondary)
+                // Lyrics (when in lyrics mode)
+                if !isInstrumental {
+                    lyricsSection
+                }
 
-                    Spacer()
+                // Create button
+                generateButton
+            }
+            .padding(Spacing.md)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
 
-                    HStack(spacing: Spacing.xs) {
-                        ForEach(ModelType.allCases, id: \.self) { model in
-                            ZStack {
-                                ModelChip(
-                                    model: model,
-                                    isSelected: appState.selectedModel == model,
-                                    downloadState: appState.modelDownloadStates[model] ?? .notDownloaded,
-                                    action: {
-                                        if appState.isModelAccessible(model) {
-                                            appState.selectedModel = model
-                                        }
-                                    },
-                                    onDownload: {
-                                        if appState.isModelAccessible(model) {
-                                            appState.downloadModel(model)
-                                        }
-                                    }
-                                )
+    // MARK: - Advanced Options (collapsed by default)
 
-                                // Pro lock overlay
-                                if model.requiresPro && !appState.isProUser {
-                                    FeatureLockOverlay(
-                                        feature: model == .acestep ? .aceStepModel : .mediumModel
-                                    )
-                                }
+    private var advancedOptions: some View {
+        VStack(spacing: Spacing.md) {
+            // Genre chips
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Spacing.sm) {
+                    ForEach(GenreCardData.presets) { genre in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                selectedGenreCard = genre
                             }
+                            if let preset = GenrePreset.allPresets.first(where: { $0.name == genre.name }) {
+                                prompt = preset.promptSuffix
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: genre.icon)
+                                    .font(.system(size: 11))
+                                Text(genre.name)
+                                    .font(Typography.captionMedium)
+                            }
+                            .foregroundStyle(selectedGenreCard?.id == genre.id ? .white : DesignSystem.Colors.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(selectedGenreCard?.id == genre.id
+                                        ? AnyShapeStyle(LinearGradient(
+                                            colors: genre.gradientColors,
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        ))
+                                        : AnyShapeStyle(Color.primary.opacity(0.06)))
+                            )
                         }
+                        .buttonStyle(.plain)
                     }
                 }
+            }
 
-                // Quality mode (ACE-Step only)
-                if appState.selectedModel.family == .acestep {
-                    Divider()
-                        .background(Theme.glassBorder)
+            // Quality
+            HStack {
+                Label("Quality", systemImage: "cpu")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
 
-                    HStack {
-                        Label("Quality", systemImage: "sparkles")
-                            .font(Typography.bodyMedium)
-                            .foregroundStyle(Theme.textSecondary)
+                Spacer()
 
-                        Spacer()
-
-                        HStack(spacing: Spacing.xs) {
-                            ForEach(QualityMode.allCases, id: \.self) { mode in
-                                QualityChip(
-                                    mode: mode,
-                                    isSelected: selectedQualityMode == mode,
-                                    action: { selectedQualityMode = mode }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Backend status warning
-                if !appState.backendConnected {
-                    Divider()
-                        .background(Theme.glassBorder)
-
-                    HStack(spacing: Spacing.sm) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Theme.warning)
-
-                        Text(appState.backendError ?? "Backend not connected")
-                            .font(Typography.caption)
-                            .foregroundStyle(Theme.textSecondary)
-
-                        Spacer()
-
-                        ActionButton(title: "Setup", variant: .outline, size: .small) {
-                            appState.showSetup = true
-                        }
+                HStack(spacing: Spacing.xs) {
+                    ForEach(QualityMode.allCases, id: \.self) { mode in
+                        QualityChip(
+                            mode: mode,
+                            isSelected: selectedQualityMode == mode,
+                            action: { selectedQualityMode = mode }
+                        )
                     }
                 }
             }
         }
+        .padding(.top, 4)
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
-    /// Durations available for current model
+    // MARK: - Lyrics Section
+
+    private var lyricsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack {
+                Label("Lyrics", systemImage: "music.mic")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: Spacing.xs) {
+                    LyricsTagButton(tag: "[verse]") { insertLyricsTag("[verse]") }
+                    LyricsTagButton(tag: "[chorus]") { insertLyricsTag("[chorus]") }
+                    LyricsTagButton(tag: "[bridge]") { insertLyricsTag("[bridge]") }
+                }
+            }
+
+            TextEditor(text: $lyrics)
+                .font(Typography.body)
+                .foregroundStyle(DesignSystem.Colors.textPrimary)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 80, maxHeight: 160)
+                .padding(Spacing.sm)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(Color.primary.opacity(0.04))
+                )
+
+            Text("Use [verse], [chorus], [bridge] tags to structure your song")
+                .font(Typography.caption)
+                .foregroundStyle(DesignSystem.Colors.textMuted)
+        }
+    }
+
+    private func insertLyricsTag(_ tag: String) {
+        if lyrics.isEmpty {
+            lyrics = tag + "\n"
+        } else if !lyrics.hasSuffix("\n") {
+            lyrics += "\n" + tag + "\n"
+        } else {
+            lyrics += tag + "\n"
+        }
+    }
+
     private var availableDurations: [TrackDuration] {
         TrackDuration.available(for: appState.selectedModel)
     }
@@ -324,24 +296,19 @@ struct GenerationView: View {
                         .tint(.white)
                 } else {
                     Image(systemName: "waveform")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                 }
 
                 Text(buttonTitle)
                     .font(Typography.headline)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(canGenerate ? .white : .secondary)
             .frame(maxWidth: .infinity)
-            .frame(height: 56)
+            .frame(height: 44)
             .background(
-                RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                    .fill(canGenerate ? Theme.accentGradient : LinearGradient(
-                        colors: [Theme.backgroundTertiary, Theme.backgroundTertiary],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ))
+                RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                    .fill(canGenerate ? AnyShapeStyle(DesignSystem.Colors.accent) : AnyShapeStyle(Color.primary.opacity(0.08)))
             )
-            .opacity(canGenerate ? 1 : 0.6)
         }
         .buttonStyle(.plain)
         .disabled(!canGenerate)
@@ -350,53 +317,84 @@ struct GenerationView: View {
     // MARK: - Progress Section
 
     private var progressSection: some View {
-        GlassCard {
-            VStack(spacing: Spacing.md) {
-                // Progress bar with animated gradient
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Theme.backgroundTertiary)
-                            .frame(height: 8)
+        VStack(spacing: Spacing.md) {
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.primary.opacity(0.06))
+                        .frame(height: 6)
 
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Theme.accentGradient)
-                            .frame(width: geometry.size.width * appState.generationProgress, height: 8)
-                            .animation(.easeInOut(duration: 0.3), value: appState.generationProgress)
-                    }
-                }
-                .frame(height: 8)
-
-                HStack {
-                    Text(appState.generationStatus)
-                        .font(Typography.caption)
-                        .foregroundStyle(Theme.textSecondary)
-
-                    Spacer()
-
-                    Text("\(Int(appState.generationProgress * 100))%")
-                        .font(Typography.captionMedium)
-                        .foregroundStyle(Theme.textPrimary)
-                }
-
-                // Estimated time based on duration and model
-                HStack {
-                    Image(systemName: "clock")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textTertiary)
-
-                    Text(estimatedTimeText)
-                        .font(Typography.caption)
-                        .foregroundStyle(Theme.textTertiary)
-
-                    Spacer()
-                }
-
-                ActionButton(title: "Cancel", icon: "xmark", variant: .outline, size: .small) {
-                    appState.cancelGeneration()
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(DesignSystem.Colors.accent)
+                        .frame(width: geometry.size.width * appState.generationProgress, height: 6)
+                        .animation(.easeInOut(duration: 0.3), value: appState.generationProgress)
                 }
             }
+            .frame(height: 6)
+
+            HStack {
+                Text(appState.generationStatus)
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                Spacer()
+
+                Text("\(Int(appState.generationProgress * 100))%")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+            }
+
+            HStack {
+                Image(systemName: "clock")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignSystem.Colors.textMuted)
+
+                Text(estimatedTimeText)
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textMuted)
+
+                Spacer()
+
+                Button {
+                    appState.cancelGeneration()
+                } label: {
+                    Text("Cancel")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
+        .padding(Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .fill(Color.primary.opacity(0.04))
+        )
+    }
+
+    // MARK: - Suggestions
+
+    private var suggestionsSection: some View {
+        SuggestionGrid(
+            suggestions: suggestions,
+            onSelect: { suggestion in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    prompt = suggestion.subtitle
+                    selectedGenreCard = nil
+                }
+            },
+            onRefresh: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    suggestions = SuggestionData.randomSet()
+                }
+            }
+        )
     }
 
     private var estimatedTimeText: String {
@@ -405,28 +403,15 @@ struct GenerationView: View {
         }
 
         let estimate: String
-        if request.model.family == .acestep {
-            // ACE-Step v1.5 turbo (8 steps) on CPU (MPS has Metal shader bugs).
-            // LM runs fast on MLX, but DiT diffusion on CPU is ~1-2 min per 10s.
-            switch request.duration {
-            case .short:     estimate = "1-2 minutes"
-            case .medium:    estimate = "3-6 minutes"
-            case .long:      estimate = "6-12 minutes"
-            case .extended:  estimate = "12-20 minutes"
-            case .maximum:   estimate = "20-40 minutes"
-            }
-        } else {
-            // MusicGen is slower: ~60s for 30s
-            switch request.duration {
-            case .short:   estimate = "1-2 minutes"
-            case .medium:  estimate = "5-10 minutes"
-            case .long:    estimate = "10-20 minutes"
-            default:       estimate = "Unknown"
-            }
+        switch request.duration {
+        case .short:     estimate = "1-2 minutes"
+        case .medium:    estimate = "3-6 minutes"
+        case .long:      estimate = "6-12 minutes"
+        case .extended:  estimate = "12-20 minutes"
+        case .maximum:   estimate = "20-40 minutes"
         }
 
-        let cpuNote = request.model.family == .acestep ? "" : " (MusicGen runs on CPU)"
-        return "Estimated time: \(estimate)\(cpuNote)"
+        return "Estimated time: \(estimate)"
     }
 
     // MARK: - Helpers
@@ -442,7 +427,7 @@ struct GenerationView: View {
         if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
             return "Downloading Model..."
         }
-        return "Generate Music"
+        return "Create"
     }
 
     private func generate() {
@@ -452,26 +437,16 @@ struct GenerationView: View {
             prompt: prompt,
             duration: selectedDuration,
             model: appState.selectedModel,
-            genre: selectedGenre,
             lyrics: effectiveLyrics,
             qualityMode: selectedQualityMode
         )
         appState.startGeneration(request: request)
     }
-
-    private let randomPrompts = [
-        "Chill lo-fi beats with vinyl crackle and soft piano",
-        "Epic cinematic orchestral with rising strings",
-        "Ambient electronic with ethereal pads and gentle arpeggios",
-        "Upbeat electronic dance with driving bass and synth leads",
-        "Smooth jazz with saxophone and brushed drums",
-        "Atmospheric ambient with nature sounds and soft drones"
-    ]
 }
 
-// MARK: - Mode Toggle Button
+// MARK: - Inline Pill
 
-struct ModeToggleButton: View {
+struct InlinePill: View {
     let title: String
     let icon: String
     let isSelected: Bool
@@ -482,23 +457,23 @@ struct ModeToggleButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Spacing.sm) {
+            HStack(spacing: 5) {
                 Image(systemName: icon)
-                    .font(.system(size: 14))
+                    .font(.system(size: 12))
 
                 Text(title)
-                    .font(Typography.bodyMedium)
+                    .font(Typography.captionMedium)
             }
             .foregroundStyle(foregroundColor)
             .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: Spacing.radiusFull)
-                    .fill(isSelected ? Theme.accentPrimary.opacity(0.2) : Theme.backgroundTertiary.opacity(0.5))
+                Capsule()
+                    .fill(isSelected ? DesignSystem.Colors.accent.opacity(0.15) : Color.primary.opacity(0.06))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: Spacing.radiusFull)
-                    .strokeBorder(isSelected ? Theme.accentPrimary : Color.clear, lineWidth: 1)
+                Capsule()
+                    .strokeBorder(isSelected ? DesignSystem.Colors.accent.opacity(0.3) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -510,14 +485,13 @@ struct ModeToggleButton: View {
             }
         }
         .disabled(isDisabled)
-        .help(isDisabled ? "Only available with ACE-Step model" : "")
     }
 
     private var foregroundColor: Color {
         if isDisabled {
-            return Theme.textTertiary
+            return DesignSystem.Colors.textMuted
         }
-        return isSelected ? Theme.textPrimary : Theme.textSecondary
+        return isSelected ? DesignSystem.Colors.textPrimary : DesignSystem.Colors.textSecondary
     }
 }
 
@@ -534,11 +508,11 @@ struct QuickActionButton: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 16))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 36, height: 36)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                .frame(width: 32, height: 32)
                 .background(
-                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                        .fill(isHovered ? Theme.backgroundTertiary : Color.clear)
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
                 )
         }
         .buttonStyle(.plain)
@@ -562,79 +536,16 @@ struct DurationChip: View {
         Button(action: action) {
             Text(duration.displayName)
                 .font(Typography.captionMedium)
-                .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                .foregroundStyle(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
                 .padding(.horizontal, Spacing.sm)
                 .padding(.vertical, Spacing.xs)
                 .background(
-                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                        .fill(isSelected ? Theme.accentPrimary : Theme.backgroundTertiary)
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? DesignSystem.Colors.accent.opacity(0.15) : Color.primary.opacity(0.06))
                 )
         }
         .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.05 : 1)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.1)) {
-                isHovered = hovering
-            }
-        }
-    }
-}
-
-// MARK: - Model Chip
-
-struct ModelChip: View {
-    let model: ModelType
-    let isSelected: Bool
-    let downloadState: ModelDownloadState
-    let action: () -> Void
-    let onDownload: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: {
-            if downloadState.isDownloaded {
-                action()
-            } else if case .notDownloaded = downloadState {
-                onDownload()
-            }
-        }) {
-            HStack(spacing: Spacing.xs) {
-                Text(model.displayName)
-                    .font(Typography.captionMedium)
-
-                switch downloadState {
-                case .notDownloaded:
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 12))
-                case .downloading(let progress):
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.5)
-                        .frame(width: 14, height: 14)
-                    Text("\(Int(progress * 100))%")
-                        .font(Typography.caption2)
-                case .downloaded:
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                    }
-                case .error:
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.error)
-                }
-            }
-            .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-            .padding(.horizontal, Spacing.sm)
-            .padding(.vertical, Spacing.xs)
-            .background(
-                RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                    .fill(isSelected ? Theme.accentPrimary : Theme.backgroundTertiary)
-            )
-        }
-        .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.05 : 1)
+        .scaleEffect(isHovered ? 1.03 : 1)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.1)) {
                 isHovered = hovering
@@ -656,16 +567,16 @@ struct QualityChip: View {
         Button(action: action) {
             Text(mode.displayName)
                 .font(Typography.captionMedium)
-                .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                .foregroundStyle(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
                 .padding(.horizontal, Spacing.sm)
                 .padding(.vertical, Spacing.xs)
                 .background(
-                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                        .fill(isSelected ? Theme.accentPrimary : Theme.backgroundTertiary)
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? DesignSystem.Colors.accent.opacity(0.15) : Color.primary.opacity(0.06))
                 )
         }
         .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.05 : 1)
+        .scaleEffect(isHovered ? 1.03 : 1)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.1)) {
                 isHovered = hovering
@@ -686,16 +597,16 @@ struct LyricsTagButton: View {
         Button(action: action) {
             Text(tag)
                 .font(Typography.caption)
-                .foregroundStyle(Theme.accentPrimary)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
                 .padding(.horizontal, Spacing.xs)
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(Theme.accentPrimary.opacity(0.1))
+                        .fill(Color.primary.opacity(isHovered ? 0.12 : 0.06))
                 )
         }
         .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.05 : 1)
+        .scaleEffect(isHovered ? 1.03 : 1)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.1)) {
                 isHovered = hovering

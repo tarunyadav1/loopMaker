@@ -37,12 +37,12 @@ struct GlassTextField: View {
             Button(action: onSubmit) {
                 Text(submitLabel)
                     .font(Typography.bodyMedium)
-                    .foregroundStyle(Theme.textPrimary)
+                    .foregroundStyle(isEnabled && !text.isEmpty ? .white : Theme.textSecondary)
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, Spacing.sm)
                     .background(
                         RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                            .fill(isEnabled && !text.isEmpty ? Theme.accentPrimary : Theme.backgroundTertiary)
+                            .fill(isEnabled && !text.isEmpty ? Theme.accentPrimary : Color.primary.opacity(0.1))
                     )
             }
             .buttonStyle(.plain)
@@ -50,17 +50,15 @@ struct GlassTextField: View {
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
-        .glassEffect(
-            isFocused
-                ? .regular.tint(Theme.accentPrimary.opacity(0.1)).interactive()
-                : .regular,
-            in: .rect(cornerRadius: Spacing.radiusMd)
+        .background(
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .fill(Color.primary.opacity(isFocused ? 0.08 : 0.05))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Spacing.radiusMd)
                 .strokeBorder(
-                    isFocused ? Theme.accentPrimary.opacity(0.5) : Color.clear,
-                    lineWidth: isFocused ? 2 : 1
+                    isFocused ? Theme.accentPrimary.opacity(0.4) : Color.primary.opacity(0.1),
+                    lineWidth: 1
                 )
         )
         .onHover { hovering in

@@ -11,7 +11,7 @@ struct StatusBarView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left: Backend status pill
+            // Left: Backend status
             backendStatusPill
                 .padding(.leading, Spacing.sm)
 
@@ -22,17 +22,12 @@ struct StatusBarView: View {
 
             Spacer()
 
-            // Right: Links
+            // Right: Model info
             trailingLinks
                 .padding(.trailing, Spacing.sm)
         }
         .frame(height: 24)
-        .background(DesignSystem.Colors.surface)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(DesignSystem.Colors.border)
-                .frame(height: 1)
-        }
+        .background(.ultraThinMaterial)
         .onAppear { startMonitoring() }
         .onDisappear { stopMonitoring() }
     }
@@ -85,8 +80,6 @@ struct StatusBarView: View {
 
     private var systemStats: some View {
         HStack(spacing: Spacing.md) {
-            statItem(label: "GPU", value: gpuUsage)
-            statDivider
             statItem(label: "CPU", value: cpuUsage)
             statDivider
             statItem(label: "RAM", value: memoryUsage)
@@ -124,19 +117,6 @@ struct StatusBarView: View {
 
     private var trailingLinks: some View {
         HStack(spacing: Spacing.sm) {
-            // Pro badge or model indicator
-            HStack(spacing: 4) {
-                Image(systemName: appState.selectedModel.familyIcon)
-                    .font(.system(size: 9))
-                Text(appState.selectedModel.displayName)
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(DesignSystem.Colors.textMuted)
-
-            Text("\u{00B7}")
-                .font(.system(size: 10))
-                .foregroundStyle(DesignSystem.Colors.textMuted)
-
             if appState.isProUser {
                 Text("Pro")
                     .font(.system(size: 10, weight: .bold))
@@ -145,26 +125,6 @@ struct StatusBarView: View {
                 Text("Free")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(DesignSystem.Colors.textMuted)
-            }
-
-            Text("\u{00B7}")
-                .font(.system(size: 10))
-                .foregroundStyle(DesignSystem.Colors.textMuted)
-
-            Button {
-                NSWorkspace.shared.open(Constants.URLs.helpURL)
-            } label: {
-                Text("Feedback")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(DesignSystem.Colors.textMuted)
-            }
-            .buttonStyle(.plain)
-            .onHover { hovering in
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
             }
         }
     }

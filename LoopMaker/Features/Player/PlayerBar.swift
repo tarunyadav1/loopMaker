@@ -6,9 +6,9 @@ struct PlayerBar: View {
     let track: Track?
     @ObservedObject var audioPlayer: AudioPlayer
     var onPlayPause: () -> Void = {}
-    var onPrevious: () -> Void = {}
-    var onNext: () -> Void = {}
     var onSeek: (Double) -> Void = { _ in }
+    var onPrevious: (() -> Void)?
+    var onNext: (() -> Void)?
 
     @State private var isHoveringProgress = false
     @State private var hoverProgress: Double = 0
@@ -16,152 +16,137 @@ struct PlayerBar: View {
     var body: some View {
         if let track = track {
             VStack(spacing: 0) {
-                // Progress bar
+                // Progress bar at top edge
                 progressBar
 
-                // Main content
-                HStack(spacing: Spacing.lg) {
-                    // Track info
+                // Main layout: track info | controls | time
+                HStack(spacing: 0) {
+                    // Left: Track info
                     trackInfo(track)
+                        .frame(maxWidth: 260, alignment: .leading)
 
                     Spacer()
 
-                    // Playback controls
+                    // Center: Playback controls
                     playbackControls
 
                     Spacer()
 
-                    // Secondary controls
-                    secondaryControls
+                    // Right: Time + progress text
+                    HStack(spacing: Spacing.sm) {
+                        Text(currentTime)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                        // Mini progress indicator
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.06))
+
+                                Capsule()
+                                    .fill(DesignSystem.Colors.accent)
+                                    .frame(width: geometry.size.width * max(0, min(1, audioPlayer.progress)))
+                            }
+                        }
+                        .frame(width: 60, height: 4)
+
+                        Text(duration)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+                    .frame(maxWidth: 220, alignment: .trailing)
                 }
                 .padding(.horizontal, Spacing.lg)
-                .padding(.vertical, Spacing.md)
+                .padding(.vertical, Spacing.sm)
             }
-            .frame(height: Spacing.playerBarHeight)
-            .background(
-                ZStack {
-                    Theme.backgroundSecondary
-
-                    // Top border
-                    VStack {
-                        Rectangle()
-                            .fill(Theme.glassBorder)
-                            .frame(height: 1)
-                        Spacer()
-                    }
-                }
-            )
+            .frame(height: 68)
+            .background(.regularMaterial)
         }
     }
 
-    // MARK: - Progress Bar
+    // MARK: - Progress Bar (top edge, full width)
 
     private var progressBar: some View {
-        VStack(spacing: 2) {
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    // Background track
-                    Rectangle()
-                        .fill(Theme.backgroundTertiary)
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.06))
 
-                    // Progress fill
-                    Rectangle()
-                        .fill(Theme.accentGradient)
-                        .frame(width: geometry.size.width * max(0, min(1, audioPlayer.progress)))
-                        .animation(.linear(duration: 0.1), value: audioPlayer.progress)
+                Rectangle()
+                    .fill(DesignSystem.Colors.accent)
+                    .frame(width: geometry.size.width * max(0, min(1, audioPlayer.progress)))
+                    .animation(.linear(duration: 0.1), value: audioPlayer.progress)
 
-                    // Hover indicator
-                    if isHoveringProgress {
-                        Rectangle()
-                            .fill(Color.white.opacity(0.3))
-                            .frame(width: geometry.size.width * hoverProgress)
+                if isHoveringProgress {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: geometry.size.width * hoverProgress)
+                }
+            }
+            .frame(height: isHoveringProgress ? 5 : 3)
+            .animation(.easeInOut(duration: 0.15), value: isHoveringProgress)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let newProgress = max(0, min(1, value.location.x / geometry.size.width))
+                        hoverProgress = newProgress
                     }
-                }
-                .frame(height: isHoveringProgress ? 6 : 3)
-                .animation(.easeInOut(duration: 0.15), value: isHoveringProgress)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            let newProgress = max(0, min(1, value.location.x / geometry.size.width))
-                            hoverProgress = newProgress
-                        }
-                        .onEnded { value in
-                            let newProgress = max(0, min(1, value.location.x / geometry.size.width))
-                            onSeek(newProgress)
-                        }
-                )
-                .onHover { hovering in
-                    isHoveringProgress = hovering
-                }
+                    .onEnded { value in
+                        let newProgress = max(0, min(1, value.location.x / geometry.size.width))
+                        onSeek(newProgress)
+                    }
+            )
+            .onHover { hovering in
+                isHoveringProgress = hovering
             }
-            .frame(height: 6)
-
-            // Time labels
-            HStack {
-                Text(currentTime)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
-
-                Spacer()
-
-                Text(duration)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-            .padding(.horizontal, Spacing.sm)
         }
+        .frame(height: 5)
     }
 
     // MARK: - Track Info
 
     private func trackInfo(_ track: Track) -> some View {
         HStack(spacing: Spacing.md) {
-            // Thumbnail
+            // Album art placeholder
             ZStack {
-                RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                    .fill(Theme.accentGradient)
-                    .frame(width: 48, height: 48)
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(DesignSystem.Colors.accentGradient)
+                    .frame(width: 42, height: 42)
 
                 Image(systemName: "waveform")
-                    .font(.system(size: 20))
+                    .font(.system(size: 16))
                     .foregroundStyle(.white)
             }
 
-            // Track details
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.displayTitle)
-                    .font(Typography.bodyMedium)
-                    .foregroundStyle(Theme.textPrimary)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
                     .lineLimit(1)
 
                 Text(track.prompt)
-                    .font(Typography.caption)
-                    .foregroundStyle(Theme.textTertiary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignSystem.Colors.textMuted)
                     .lineLimit(1)
             }
-            .frame(maxWidth: 200, alignment: .leading)
-
-            // Like button
-            Button(action: {}) {
-                Image(systemName: track.isFavorite ? "heart.fill" : "heart")
-                    .font(.system(size: 16))
-                    .foregroundStyle(track.isFavorite ? Theme.error : Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
         }
     }
 
-    // MARK: - Playback Controls
+    // MARK: - Playback Controls (centered, Suno-style)
 
     private var playbackControls: some View {
         HStack(spacing: Spacing.lg) {
-            // Shuffle
-            PlayerControlButton(icon: "shuffle", size: .small) {}
-
             // Previous
-            PlayerControlButton(icon: "backward.fill", size: .medium, action: onPrevious)
+            PlayerControlButton(
+                icon: "backward.fill",
+                size: .small,
+                action: { onPrevious?() }
+            )
+            .opacity(onPrevious != nil ? 1 : 0.3)
+            .disabled(onPrevious == nil)
 
-            // Play/Pause
+            // Play / Pause (primary, larger)
             PlayerControlButton(
                 icon: audioPlayer.isPlaying ? "pause.fill" : "play.fill",
                 size: .large,
@@ -170,43 +155,13 @@ struct PlayerBar: View {
             )
 
             // Next
-            PlayerControlButton(icon: "forward.fill", size: .medium, action: onNext)
-
-            // Repeat
-            PlayerControlButton(icon: "repeat", size: .small) {}
-        }
-    }
-
-    // MARK: - Secondary Controls
-
-    private var secondaryControls: some View {
-        HStack(spacing: Spacing.md) {
-            // Volume
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.textSecondary)
-
-                Slider(value: .constant(0.7))
-                    .frame(width: 80)
-                    .tint(Theme.accentPrimary)
-            }
-
-            // Share button
-            Button(action: {}) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-
-            // Queue button
-            Button(action: {}) {
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
+            PlayerControlButton(
+                icon: "forward.fill",
+                size: .small,
+                action: { onNext?() }
+            )
+            .opacity(onNext != nil ? 1 : 0.3)
+            .disabled(onNext == nil)
         }
     }
 
@@ -283,12 +238,11 @@ struct PlayerControlButton: View {
             track: Track(
                 prompt: "Lo-fi beats with warm piano and soft drums",
                 duration: .medium,
-                model: .small,
+                model: .acestep,
                 audioURL: URL(fileURLWithPath: "/tmp/test.wav"),
                 title: "Sunset Vibes"
             ),
             audioPlayer: AudioPlayer()
         )
     }
-    .background(Theme.background)
 }

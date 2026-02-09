@@ -30,7 +30,6 @@ public struct GenerationRequest: Sendable {
     public let model: ModelType
     public let genre: GenrePreset?
     public let seed: UInt64?
-    // ACE-Step specific
     public let lyrics: String?
     public let qualityMode: QualityMode
     public let guidanceScale: Double
@@ -38,7 +37,7 @@ public struct GenerationRequest: Sendable {
     public init(
         prompt: String,
         duration: TrackDuration,
-        model: ModelType,
+        model: ModelType = .acestep,
         genre: GenrePreset? = nil,
         seed: UInt64? = nil,
         lyrics: String? = nil,
@@ -55,17 +54,13 @@ public struct GenerationRequest: Sendable {
         self.guidanceScale = guidanceScale
     }
 
-    /// Full prompt including genre suffix if selected
+    /// Full prompt (genre text is now included directly in the prompt field)
     public var fullPrompt: String {
-        if let genre = genre {
-            return "\(prompt), \(genre.promptSuffix)"
-        }
         return prompt
     }
 
-    /// Effective lyrics for ACE-Step (returns [inst] for instrumental)
-    public var effectiveLyrics: String? {
-        guard model.supportsLyrics else { return nil }
-        return lyrics ?? "[inst]"
+    /// Effective lyrics (returns [inst] for instrumental)
+    public var effectiveLyrics: String {
+        lyrics ?? "[inst]"
     }
 }

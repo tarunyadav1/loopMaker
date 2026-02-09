@@ -25,64 +25,42 @@ final class LoopMakerTests: XCTestCase {
     }
 
     func testTrackDurationCompatibility() {
-        // MusicGen models (small/medium) support up to 60s
-        XCTAssertTrue(TrackDuration.short.isCompatible(with: .small))
-        XCTAssertTrue(TrackDuration.medium.isCompatible(with: .small))
-        XCTAssertTrue(TrackDuration.long.isCompatible(with: .small))
-        XCTAssertFalse(TrackDuration.extended.isCompatible(with: .small))
-        XCTAssertFalse(TrackDuration.maximum.isCompatible(with: .small))
-
-        // ACE-Step supports up to 240s
+        // ACE-Step supports up to 240s (all durations)
         XCTAssertTrue(TrackDuration.short.isCompatible(with: .acestep))
+        XCTAssertTrue(TrackDuration.medium.isCompatible(with: .acestep))
+        XCTAssertTrue(TrackDuration.long.isCompatible(with: .acestep))
         XCTAssertTrue(TrackDuration.extended.isCompatible(with: .acestep))
         XCTAssertTrue(TrackDuration.maximum.isCompatible(with: .acestep))
     }
 
     func testAvailableDurationsForModel() {
-        let smallDurations = TrackDuration.available(for: .small)
-        XCTAssertEqual(smallDurations.count, 3)
-        XCTAssertTrue(smallDurations.contains(.short))
-        XCTAssertFalse(smallDurations.contains(.extended))
-
         let acestepDurations = TrackDuration.available(for: .acestep)
         XCTAssertEqual(acestepDurations.count, 5)
+        XCTAssertTrue(acestepDurations.contains(.short))
         XCTAssertTrue(acestepDurations.contains(.maximum))
     }
 
     // MARK: - Model Type Tests
 
     func testModelTypeProperties() {
-        XCTAssertEqual(ModelType.small.sizeGB, 1.2)
-        XCTAssertEqual(ModelType.medium.sizeGB, 6.0)
-        XCTAssertEqual(ModelType.acestep.sizeGB, 5.0)  // v1.5: 2B DiT + 0.6B LM
-
-        XCTAssertEqual(ModelType.small.minimumRAM, 8)
-        XCTAssertEqual(ModelType.medium.minimumRAM, 16)
-        XCTAssertEqual(ModelType.acestep.minimumRAM, 8)  // v1.5 is lighter
+        XCTAssertEqual(ModelType.acestep.sizeGB, 5.0)
+        XCTAssertEqual(ModelType.acestep.minimumRAM, 8)
     }
 
     func testModelTypeSizeFormatted() {
-        XCTAssertEqual(ModelType.small.sizeFormatted, "1.2 GB")
-        XCTAssertEqual(ModelType.medium.sizeFormatted, "6.0 GB")
         XCTAssertEqual(ModelType.acestep.sizeFormatted, "5.0 GB")
     }
 
-    func testModelTypeFamily() {
-        XCTAssertEqual(ModelType.small.family, .musicgen)
-        XCTAssertEqual(ModelType.medium.family, .musicgen)
-        XCTAssertEqual(ModelType.acestep.family, .acestep)
-    }
-
     func testModelTypeMaxDuration() {
-        XCTAssertEqual(ModelType.small.maxDurationSeconds, 60)
-        XCTAssertEqual(ModelType.medium.maxDurationSeconds, 60)
         XCTAssertEqual(ModelType.acestep.maxDurationSeconds, 240)
     }
 
     func testModelTypeSupportsLyrics() {
-        XCTAssertFalse(ModelType.small.supportsLyrics)
-        XCTAssertFalse(ModelType.medium.supportsLyrics)
         XCTAssertTrue(ModelType.acestep.supportsLyrics)
+    }
+
+    func testModelTypeAllCases() {
+        XCTAssertEqual(ModelType.allCases, [.acestep])
     }
 
     // MARK: - Quality Mode Tests
@@ -118,22 +96,18 @@ final class LoopMakerTests: XCTestCase {
     // MARK: - Generation Request Tests
 
     func testGenerationRequestFullPrompt() {
-        let lofiPreset = GenrePreset.allPresets.first { $0.id == "lofi" }!
-
+        // fullPrompt returns the prompt directly (genre is pre-applied by the UI)
         let requestWithGenre = GenerationRequest(
             prompt: "chill beats",
             duration: .medium,
-            model: .small,
-            genre: lofiPreset
+            model: .acestep
         )
 
-        XCTAssertTrue(requestWithGenre.fullPrompt.contains("chill beats"))
-        XCTAssertTrue(requestWithGenre.fullPrompt.contains(lofiPreset.promptSuffix))
+        XCTAssertEqual(requestWithGenre.fullPrompt, "chill beats")
 
         let requestWithoutGenre = GenerationRequest(
             prompt: "epic music",
             duration: .long,
-            model: .medium,
             genre: nil
         )
 
@@ -154,21 +128,12 @@ final class LoopMakerTests: XCTestCase {
         XCTAssertEqual(acestepRequest.qualityMode, .quality)
         XCTAssertEqual(acestepRequest.guidanceScale, 7.0) // v1.5 default
 
-        // ACE-Step instrumental (no lyrics)
+        // Instrumental (no lyrics) returns [inst]
         let instrumentalRequest = GenerationRequest(
             prompt: "ambient soundscape",
-            duration: .long,
-            model: .acestep
+            duration: .long
         )
         XCTAssertEqual(instrumentalRequest.effectiveLyrics, "[inst]")
-
-        // MusicGen request should have nil effectiveLyrics
-        let musicgenRequest = GenerationRequest(
-            prompt: "jazz",
-            duration: .medium,
-            model: .small
-        )
-        XCTAssertNil(musicgenRequest.effectiveLyrics)
     }
 
     // MARK: - Track Tests
@@ -178,7 +143,7 @@ final class LoopMakerTests: XCTestCase {
             id: UUID(),
             prompt: "Test prompt",
             duration: .medium,
-            model: .small,
+            model: .acestep,
             audioURL: URL(fileURLWithPath: "/tmp/test.wav"),
             createdAt: Date(),
             title: "Custom Title"
@@ -190,7 +155,7 @@ final class LoopMakerTests: XCTestCase {
             id: UUID(),
             prompt: "This is a longer test prompt for testing",
             duration: .medium,
-            model: .small,
+            model: .acestep,
             audioURL: URL(fileURLWithPath: "/tmp/test.wav"),
             createdAt: Date()
         )

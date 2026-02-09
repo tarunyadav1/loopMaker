@@ -12,32 +12,32 @@ struct GenreCardData: Identifiable {
         GenreCardData(
             name: "Lo-Fi",
             icon: "headphones",
-            gradientColors: [Color(hex: "8B5CF6"), Color(hex: "6D28D9")]
+            gradientColors: [Color(hex: "1E1B4B"), Color(hex: "3730A3"), Color(hex: "4F46B5")]
         ),
         GenreCardData(
             name: "Cinematic",
             icon: "film",
-            gradientColors: [Color(hex: "F59E0B"), Color(hex: "D97706")]
+            gradientColors: [Color(hex: "451A03"), Color(hex: "92400E"), Color(hex: "B45309")]
         ),
         GenreCardData(
             name: "Ambient",
             icon: "cloud",
-            gradientColors: [Color(hex: "06B6D4"), Color(hex: "0891B2")]
+            gradientColors: [Color(hex: "042F2E"), Color(hex: "115E59"), Color(hex: "0F766E")]
         ),
         GenreCardData(
             name: "Electronic",
             icon: "waveform",
-            gradientColors: [Color(hex: "EC4899"), Color(hex: "DB2777")]
+            gradientColors: [Color(hex: "4A0D29"), Color(hex: "831843"), Color(hex: "9D174D")]
         ),
         GenreCardData(
             name: "Hip-Hop",
             icon: "beats.headphones",
-            gradientColors: [Color(hex: "EF4444"), Color(hex: "DC2626")]
+            gradientColors: [Color(hex: "450A0A"), Color(hex: "7F1D1D"), Color(hex: "991B1B")]
         ),
         GenreCardData(
             name: "Jazz",
             icon: "music.quarternote.3",
-            gradientColors: [Color(hex: "10B981"), Color(hex: "059669")]
+            gradientColors: [Color(hex: "052E16"), Color(hex: "14532D"), Color(hex: "166534")]
         )
     ]
 }
@@ -53,51 +53,59 @@ struct GenreCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(alignment: .leading, spacing: Spacing.sm) {
-                // Icon
-                Image(systemName: data.icon)
-                    .font(.system(size: 24))
-                    .foregroundStyle(.white)
-
-                Spacer()
-
-                // Name
-                Text(data.name)
-                    .font(Typography.headline)
-                    .foregroundStyle(.white)
-            }
-            .padding(Spacing.md)
-            .frame(width: Spacing.genreCardWidth, height: Spacing.genreCardHeight)
-            .background(
-                ZStack {
-                    // Gradient background
-                    RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                        .fill(
-                            LinearGradient(
-                                colors: data.gradientColors,
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
+            ZStack(alignment: .bottomLeading) {
+                // Gradient background
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(
+                        LinearGradient(
+                            colors: data.gradientColors,
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
+                    )
 
-                    // Hover overlay
-                    if isHovered {
-                        RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                            .fill(Color.white.opacity(0.1))
-                    }
+                // Subtle noise overlay
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.04))
 
-                    // Selection ring
-                    if isSelected {
-                        RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                            .strokeBorder(Color.white, lineWidth: 2)
-                    }
+                // Hover brightness overlay
+                if isHovered {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.white.opacity(0.08))
                 }
+
+                // Icon top-right
+                VStack {
+                    HStack {
+                        Spacer()
+                        Image(systemName: data.icon)
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .padding(Spacing.md)
+                    }
+                    Spacer()
+                }
+
+                // Name bottom-left
+                Text(data.name)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(Spacing.md)
+            }
+            .frame(width: Spacing.genreCardWidth, height: Spacing.genreCardHeight)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(
+                        isSelected ? DesignSystem.Colors.accent : Color.clear,
+                        lineWidth: 1.5
+                    )
             )
-            .scaleEffect(isHovered ? 1.02 : 1)
+            .scaleEffect(isHovered ? 1.03 : 1)
+            .brightness(isHovered ? 0.05 : 0)
             .shadow(
-                color: data.gradientColors[0].opacity(isHovered ? 0.4 : 0.2),
-                radius: isHovered ? 12 : 8,
-                y: isHovered ? 6 : 4
+                color: data.gradientColors[1].opacity(isHovered ? 0.3 : 0.15),
+                radius: isHovered ? 12 : 6,
+                y: isHovered ? 4 : 2
             )
         }
         .buttonStyle(.plain)

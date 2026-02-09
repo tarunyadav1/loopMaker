@@ -16,11 +16,11 @@ public struct GenrePreset: Identifiable, Codable, Sendable, Hashable {
         self.color = color
     }
 
-    /// All available genre presets
+    /// All available genre presets (must match GenreCardData names)
     public static let allPresets: [GenrePreset] = [
         GenrePreset(
             id: "lofi",
-            name: "Lo-fi",
+            name: "Lo-Fi",
             icon: "headphones",
             promptSuffix: "lo-fi hip hop, vinyl crackle, mellow beats, jazzy chords, relaxing",
             color: "purple"
@@ -40,13 +40,6 @@ public struct GenrePreset: Identifiable, Codable, Sendable, Hashable {
             color: "blue"
         ),
         GenrePreset(
-            id: "podcast",
-            name: "Podcast Intro",
-            icon: "mic",
-            promptSuffix: "upbeat podcast intro, energetic, modern, catchy melody",
-            color: "green"
-        ),
-        GenrePreset(
             id: "electronic",
             name: "Electronic",
             icon: "bolt",
@@ -54,11 +47,18 @@ public struct GenrePreset: Identifiable, Codable, Sendable, Hashable {
             color: "pink"
         ),
         GenrePreset(
-            id: "acoustic",
-            name: "Acoustic",
-            icon: "guitars",
-            promptSuffix: "acoustic guitar, warm, organic, folk inspired, intimate",
-            color: "brown"
+            id: "hiphop",
+            name: "Hip-Hop",
+            icon: "beats.headphones",
+            promptSuffix: "hip hop beats, 808 bass, trap hi-hats, boom bap, rhythmic",
+            color: "red"
+        ),
+        GenrePreset(
+            id: "jazz",
+            name: "Jazz",
+            icon: "music.quarternote.3",
+            promptSuffix: "jazz, smooth saxophone, brushed drums, upright bass, swing feel",
+            color: "green"
         )
     ]
 }

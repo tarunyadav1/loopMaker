@@ -20,10 +20,8 @@ public final class AppState: ObservableObject {
     @Published var currentRequest: GenerationRequest?
 
     // MARK: - Model State
-    @Published var selectedModel: ModelType = .small
+    @Published var selectedModel: ModelType = .acestep
     @Published var modelDownloadStates: [ModelType: ModelDownloadState] = [
-        .small: .notDownloaded,
-        .medium: .notDownloaded,
         .acestep: .notDownloaded
     ]
 
@@ -39,6 +37,17 @@ public final class AppState: ObservableObject {
     let audioPlayer = AudioPlayer()
     let licenseService = LicenseService.shared
 
+    // MARK: - Track Persistence
+
+    private static let tracksDirectoryURL: URL = {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("LoopMaker/tracks")
+    }()
+
+    private static var tracksMetadataURL: URL {
+        tracksDirectoryURL.appendingPathComponent("tracks.json")
+    }
+
     // MARK: - Backend Status
     @Published var backendConnected = false
     @Published var backendError: String?
@@ -53,6 +62,9 @@ public final class AppState: ObservableObject {
     public init() {
         // Register as shared instance for app-level access
         registerAsShared()
+
+        // Restore persisted tracks from disk
+        restoreTracksFromDisk()
 
         // Restore persisted model download states before backend check
         restoreModelDownloadStates()
@@ -141,12 +153,6 @@ public final class AppState: ObservableObject {
     var canGenerate: Bool {
         guard backendConnected else { return false }
         guard let state = modelDownloadStates[selectedModel] else { return false }
-
-        // Pro model check
-        if selectedModel.requiresPro && !isProUser {
-            return false
-        }
-
         return state.isDownloaded && !isGenerating
     }
 
@@ -178,6 +184,7 @@ public final class AppState: ObservableObject {
                 tracks.insert(track, at: 0)
                 selectedTrack = track
                 lastGeneratedTrack = track
+                persistTracksToDisk()
                 playTrack(track)
                 generationStatus = "Complete!"
             } catch {
@@ -229,6 +236,18 @@ public final class AppState: ObservableObject {
         }
         // Clean up audio file
         try? FileManager.default.removeItem(at: track.audioURL)
+        persistTracksToDisk()
+    }
+
+    func clearAllTracks() {
+        stopPlayback()
+        for track in tracks {
+            try? FileManager.default.removeItem(at: track.audioURL)
+        }
+        tracks.removeAll()
+        selectedTrack = nil
+        lastGeneratedTrack = nil
+        persistTracksToDisk()
     }
 
     func toggleFavorite(_ track: Track) {
@@ -244,6 +263,8 @@ public final class AppState: ObservableObject {
             if lastGeneratedTrack?.id == updatedTrack.id {
                 lastGeneratedTrack = updatedTrack
             }
+
+            persistTracksToDisk()
         }
     }
 
@@ -295,6 +316,31 @@ public final class AppState: ObservableObject {
             if let model = ModelType(rawValue: key) {
                 modelDownloadStates[model] = .downloaded
             }
+        }
+    }
+
+    // MARK: - Track Persistence
+
+    private func persistTracksToDisk() {
+        do {
+            let data = try JSONEncoder().encode(tracks)
+            try data.write(to: Self.tracksMetadataURL, options: .atomic)
+        } catch {
+            Log.data.error("Failed to persist tracks: \(error.localizedDescription)")
+        }
+    }
+
+    private func restoreTracksFromDisk() {
+        let url = Self.tracksMetadataURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let restored = try JSONDecoder().decode([Track].self, from: data)
+            // Only keep tracks whose audio files still exist on disk
+            tracks = restored.filter { FileManager.default.fileExists(atPath: $0.audioURL.path) }
+        } catch {
+            Log.data.error("Failed to restore tracks: \(error.localizedDescription)")
         }
     }
 }

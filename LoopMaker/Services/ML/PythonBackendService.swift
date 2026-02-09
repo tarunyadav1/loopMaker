@@ -59,11 +59,9 @@ public final class PythonBackendService: ObservableObject {
             body["seed"] = seed
         }
 
-        if request.model.supportsLyrics {
-            body["lyrics"] = request.effectiveLyrics ?? "[inst]"
-            body["quality_mode"] = request.qualityMode.rawValue
-            body["guidance_scale"] = request.guidanceScale
-        }
+        body["lyrics"] = request.effectiveLyrics
+        body["quality_mode"] = request.qualityMode.rawValue
+        body["guidance_scale"] = request.guidanceScale
 
         let requestData = try JSONSerialization.data(withJSONObject: body)
         let requestString = String(data: requestData, encoding: .utf8)!
@@ -190,7 +188,6 @@ public final class PythonBackendService: ObservableObject {
     public struct ModelStatus {
         public let downloaded: Bool
         public let loaded: Bool
-        public let family: String
         public let sizeGB: Double
         public let maxDuration: Int
         public let supportsLyrics: Bool
@@ -235,10 +232,9 @@ public final class PythonBackendService: ObservableObject {
                 status[model] = ModelStatus(
                     downloaded: modelData["downloaded"] as? Bool ?? false,
                     loaded: modelData["loaded"] as? Bool ?? false,
-                    family: modelData["family"] as? String ?? "unknown",
                     sizeGB: modelData["size_gb"] as? Double ?? 0,
-                    maxDuration: modelData["max_duration"] as? Int ?? 60,
-                    supportsLyrics: modelData["supports_lyrics"] as? Bool ?? false
+                    maxDuration: modelData["max_duration"] as? Int ?? 240,
+                    supportsLyrics: modelData["supports_lyrics"] as? Bool ?? true
                 )
             }
         }

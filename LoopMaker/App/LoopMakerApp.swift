@@ -12,6 +12,7 @@ struct LoopMakerApp: App {
             MainWindow()
                 .environmentObject(appState)
                 .environmentObject(updateService)
+                .tint(DesignSystem.Colors.accent)
                 .onAppear {
                     DispatchQueue.main.async {
                         NSApp.setActivationPolicy(.regular)

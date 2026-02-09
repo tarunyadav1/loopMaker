@@ -27,7 +27,7 @@ Carthage/Build/
 Carthage/Checkouts/
 
 # Python Backend
-backend/__pycache__/
+**/__pycache__/
 backend/*.pyc
 backend/.venv/
 backend/venv/

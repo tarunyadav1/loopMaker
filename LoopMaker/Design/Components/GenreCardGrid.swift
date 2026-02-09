@@ -10,26 +10,9 @@ struct GenreCardGrid: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             // Section header
-            HStack {
-                Text("Quick Start")
-                    .font(Typography.title3)
-                    .foregroundStyle(Theme.textPrimary)
-
-                Spacer()
-
-                Button(action: {}) {
-                    HStack(spacing: Spacing.xs) {
-                        Text("See all")
-                            .font(Typography.caption)
-                            .foregroundStyle(Theme.textSecondary)
-
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                }
-                .buttonStyle(.plain)
-            }
+            Text("Quick Start")
+                .font(Typography.title3)
+                .foregroundStyle(Theme.textPrimary)
 
             // Horizontal scroll
             ScrollView(.horizontal, showsIndicators: false) {

@@ -15,8 +15,8 @@ struct LicenseGateView: View {
             // Background with subtle gradient
             LinearGradient(
                 colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .windowBackgroundColor).opacity(0.95)
+                    DesignSystem.Colors.background,
+                    DesignSystem.Colors.background.opacity(0.95)
                 ],
                 startPoint: .top,
                 endPoint: .bottom

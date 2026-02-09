@@ -132,15 +132,11 @@ enum LicenseError: LocalizedError {
 
 /// Features available in Pro version
 enum ProFeature: String, CaseIterable {
-    case mediumModel = "medium_model"
-    case aceStepModel = "acestep_model"
     case extendedDuration = "extended_duration"
     case prioritySupport = "priority_support"
 
     var displayName: String {
         switch self {
-        case .mediumModel: return "Medium MusicGen Model"
-        case .aceStepModel: return "ACE-Step Model"
         case .extendedDuration: return "Extended Durations"
         case .prioritySupport: return "Priority Support"
         }
@@ -148,8 +144,6 @@ enum ProFeature: String, CaseIterable {
 
     var description: String {
         switch self {
-        case .mediumModel: return "Access to the medium (1.5B) MusicGen model for better quality"
-        case .aceStepModel: return "Access to ACE-Step model with lyrics support"
         case .extendedDuration: return "Generate tracks up to 120s and 240s"
         case .prioritySupport: return "Get priority support via email"
         }

@@ -2,14 +2,14 @@ import SwiftUI
 import AppKit
 
 /// LoopMaker Design System for macOS 26+ (Tahoe)
-/// Liquid Glass design with purple/cyan accent palette
+/// Liquid Glass design with unified muted purple accent
 enum DesignSystem {
     // MARK: - Colors
     enum Colors {
-        // Backgrounds - translucent glass (appearance-adaptive)
-        static let background = Color(nsColor: .windowBackgroundColor)
-        static let backgroundSecondary = Color.clear
-        static let backgroundTertiary = Color.clear
+        // Backgrounds - transparent for Liquid Glass vibrancy
+        static let background = Color.clear
+        static let backgroundSecondary = Color.primary.opacity(0.04)
+        static let backgroundTertiary = Color.primary.opacity(0.08)
 
         // Glass surfaces (appearance-adaptive)
         static let glassLight = Color.primary.opacity(0.08)
@@ -29,21 +29,21 @@ enum DesignSystem {
         static let textTertiary = Color.secondary.opacity(0.7)
         static let textMuted = Color.secondary.opacity(0.5)
 
-        // Accent - Purple (primary brand color)
-        static let accent = Color(hex: "8B5CF6")
-        static let accentHover = Color(hex: "7C3AED")
-        static let accentSubtle = Color(hex: "8B5CF6").opacity(0.1)
-        static let accentMuted = Color(hex: "8B5CF6").opacity(0.06)
-        static let accentGlass = Color(hex: "8B5CF6").opacity(0.15)
+        // Accent - Muted Purple (unified brand color)
+        static let accent = Color(hex: "7B7FFF")
+        static let accentHover = Color(hex: "6B6FEF")
+        static let accentSubtle = Color(hex: "7B7FFF").opacity(0.1)
+        static let accentMuted = Color(hex: "7B7FFF").opacity(0.06)
+        static let accentGlass = Color(hex: "7B7FFF").opacity(0.15)
 
-        // Secondary accent - Cyan
-        static let accentSecondary = Color(hex: "06B6D4")
-        static let accentSecondaryHover = Color(hex: "0891B2")
+        // Secondary accent - maps to primary accent (unified)
+        static let accentSecondary = Color(hex: "7B7FFF")
+        static let accentSecondaryHover = Color(hex: "6B6FEF")
 
-        // Music/Audio accent colors
-        static let audioPrimary = Color(hex: "8B5CF6")       // Purple - main audio accent
-        static let audioSecondary = Color(hex: "06B6D4")     // Cyan - secondary
-        static let audioGlow = Color(hex: "8B5CF6").opacity(0.4)
+        // Music/Audio accent colors (unified)
+        static let audioPrimary = Color(hex: "7B7FFF")
+        static let audioSecondary = Color(hex: "7B7FFF")
+        static let audioGlow = Color(hex: "7B7FFF").opacity(0.4)
 
         // Semantic colors
         static let success = Color(hex: "22C55E")
@@ -58,46 +58,46 @@ enum DesignSystem {
         static let errorGlow = Color(hex: "EF4444").opacity(0.4)
         static let errorGlass = Color(hex: "EF4444").opacity(0.12)
 
-        static let info = Color(hex: "8B5CF6")
+        static let info = Color(hex: "7B7FFF")
 
-        // Generation state colors
-        static let generatingActive = Color(hex: "8B5CF6")
-        static let generatingPulse = Color(hex: "8B5CF6").opacity(0.2)
-        static let generatingGlass = Color(hex: "8B5CF6").opacity(0.1)
-        static let generatingGlow = Color(hex: "8B5CF6").opacity(0.5)
-        static let processingActive = Color(hex: "06B6D4")
-        static let processingGlow = Color(hex: "06B6D4").opacity(0.4)
+        // Generation state colors (unified accent)
+        static let generatingActive = Color(hex: "7B7FFF")
+        static let generatingPulse = Color(hex: "7B7FFF").opacity(0.2)
+        static let generatingGlass = Color(hex: "7B7FFF").opacity(0.1)
+        static let generatingGlow = Color(hex: "7B7FFF").opacity(0.5)
+        static let processingActive = Color(hex: "7B7FFF")
+        static let processingGlow = Color(hex: "7B7FFF").opacity(0.4)
 
         // Borders - subtle glass edges (appearance-adaptive)
         static let border = Color.primary.opacity(0.08)
         static let borderHover = Color.primary.opacity(0.12)
-        static let borderFocus = Color(hex: "8B5CF6").opacity(0.4)
+        static let borderFocus = Color(hex: "7B7FFF").opacity(0.4)
         static let borderGlass = Color.primary.opacity(0.15)
 
-        // Gradients - purple/cyan brand palette
+        // Gradients - unified accent palette
         static let accentGradient = LinearGradient(
-            colors: [Color(hex: "8B5CF6"), Color(hex: "06B6D4")],
+            colors: [Color(hex: "7B7FFF"), Color(hex: "6B6FEF")],
             startPoint: .leading,
             endPoint: .trailing
         )
 
         static let softAccent = LinearGradient(
-            colors: [Color(hex: "8B5CF6").opacity(0.1), Color(hex: "06B6D4").opacity(0.1)],
+            colors: [Color(hex: "7B7FFF").opacity(0.1), Color(hex: "6B6FEF").opacity(0.08)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
 
         static let purpleGradient = LinearGradient(
-            colors: [Color(hex: "8B5CF6"), Color(hex: "6D28D9")],
+            colors: [Color(hex: "7B7FFF"), Color(hex: "6B6FEF")],
             startPoint: .leading,
             endPoint: .trailing
         )
 
         static let spectralGradient = LinearGradient(
             colors: [
-                Color(hex: "8B5CF6").opacity(0.6),
-                Color(hex: "06B6D4").opacity(0.4),
-                Color(hex: "6D28D9").opacity(0.3)
+                Color(hex: "7B7FFF").opacity(0.5),
+                Color(hex: "6B6FEF").opacity(0.3),
+                Color(hex: "5B5FDF").opacity(0.2)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -113,7 +113,7 @@ enum DesignSystem {
         )
 
         static let generatingGradient = LinearGradient(
-            colors: [Color(hex: "8B5CF6"), Color(hex: "A78BFA")],
+            colors: [Color(hex: "7B7FFF"), Color(hex: "9B9FFF")],
             startPoint: .bottom,
             endPoint: .top
         )
@@ -364,7 +364,10 @@ struct GlassButtonBackground: ViewModifier {
                 .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium))
         case .secondary:
             content
-                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium))
+                .glassEffect(
+                    .regular.tint(DesignSystem.Colors.accent).interactive(),
+                    in: RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
+                )
         case .ghost:
             content
                 .background(isPressed ? DesignSystem.Colors.surfaceActive : Color.clear)
@@ -446,7 +449,7 @@ struct IconButtonBackground: ViewModifier {
                 .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .circle)
         } else {
             content
-                .glassEffect(.regular.interactive(), in: .circle)
+                .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .circle)
         }
     }
 }
@@ -571,7 +574,10 @@ extension View {
     func liquidGlassCardInteractive(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
             .padding(DesignSystem.Spacing.lg)
-            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: cornerRadius))
+            .glassEffect(
+                .regular.tint(DesignSystem.Colors.accent).interactive(),
+                in: RoundedRectangle(cornerRadius: cornerRadius)
+            )
     }
 
     func liquidGlassTinted(_ color: Color, cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
@@ -592,7 +598,7 @@ extension View {
 
     func liquidGlassPillInteractive() -> some View {
         self
-            .glassEffect(.regular.interactive(), in: .capsule)
+            .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .capsule)
     }
 
     func liquidGlassCircle() -> some View {
@@ -602,7 +608,7 @@ extension View {
 
     func liquidGlassCircleInteractive() -> some View {
         self
-            .glassEffect(.regular.interactive(), in: .circle)
+            .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .circle)
     }
 
     func glassCard(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
@@ -672,16 +678,7 @@ extension View {
     }
 
     func subtleGradientBackground() -> some View {
-        self.background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .windowBackgroundColor).opacity(0.95)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        self.background(.regularMaterial)
     }
 }
 

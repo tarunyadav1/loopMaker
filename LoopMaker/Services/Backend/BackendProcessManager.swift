@@ -366,21 +366,6 @@ public final class BackendProcessManager: ObservableObject {
             try FileManager.default.copyItem(at: sourceFile, to: destFile)
         }
 
-        // Copy Python package directories (e.g. mlx_musicgen/)
-        let packageDirs = ["mlx_musicgen"]
-        for dir in packageDirs {
-            let sourceDir = source.appendingPathComponent(dir)
-            let destDir = backendURL.appendingPathComponent(dir)
-
-            guard FileManager.default.fileExists(atPath: sourceDir.path) else { continue }
-
-            if FileManager.default.fileExists(atPath: destDir.path) {
-                try FileManager.default.removeItem(at: destDir)
-            }
-
-            try FileManager.default.copyItem(at: sourceDir, to: destDir)
-        }
-
         let backendPath = self.backendURL.path
         logger.info("Backend files copied to: \(backendPath)")
     }
