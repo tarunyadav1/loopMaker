@@ -62,6 +62,12 @@ public final class PythonBackendService: ObservableObject {
         body["lyrics"] = request.effectiveLyrics
         body["quality_mode"] = request.qualityMode.rawValue
         body["guidance_scale"] = request.guidanceScale
+        body["task_type"] = request.taskType.rawValue
+
+        if request.taskType == .cover, let sourceURL = request.sourceAudioURL {
+            body["source_audio_path"] = sourceURL.path
+            body["ref_audio_strength"] = request.refAudioStrength
+        }
 
         let requestData = try JSONSerialization.data(withJSONObject: body)
         let requestString = String(data: requestData, encoding: .utf8)!
@@ -108,7 +114,9 @@ public final class PythonBackendService: ObservableObject {
                     duration: request.duration,
                     model: request.model,
                     audioURL: fileURL,
-                    lyrics: request.lyrics
+                    lyrics: request.lyrics,
+                    taskType: request.taskType == .text2music ? nil : request.taskType.rawValue,
+                    sourceAudioName: request.sourceAudioURL?.lastPathComponent
                 )
 
             case "error":

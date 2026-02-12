@@ -252,18 +252,26 @@ struct TrackGridItem: View {
                             .foregroundStyle(.white)
                     }
 
-                    // Favorite badge
-                    if track.isFavorite {
-                        VStack {
-                            HStack {
-                                Spacer()
+                    // Badges
+                    VStack {
+                        HStack {
+                            if track.isCover {
+                                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.white)
+                                    .padding(Spacing.sm)
+                            }
+
+                            Spacer()
+
+                            if track.isFavorite {
                                 Image(systemName: "heart.fill")
                                     .font(.system(size: 14))
                                     .foregroundStyle(.white)
                                     .padding(Spacing.sm)
                             }
-                            Spacer()
                         }
+                        Spacer()
                     }
                 }
 
@@ -345,6 +353,12 @@ struct DarkTrackRow: View {
                             .font(Typography.bodyMedium)
                             .foregroundStyle(Theme.textPrimary)
                             .lineLimit(1)
+
+                        if track.isCover {
+                            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.accentPrimary)
+                        }
 
                         if track.isFavorite {
                             Image(systemName: "heart.fill")

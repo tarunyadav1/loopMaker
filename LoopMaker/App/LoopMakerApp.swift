@@ -61,14 +61,15 @@ struct LoopMakerApp: App {
             UpdateService.shared.checkForUpdatesInBackground()
         }
 
-        // Register for app termination to clean up backend process
+        // Register for app termination to clean up backend process.
+        // Must be synchronous — async Task may not complete before the process exits.
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { _ in
-            Task { @MainActor in
-                await AppState.shared?.backendManager.stopBackend()
+            MainActor.assumeIsolated {
+                AppState.shared?.backendManager.terminateBackendNow()
             }
         }
     }

@@ -22,10 +22,8 @@ if platform.system() == "Darwin":
 import numpy as np
 import torch
 
-# Note: PyTorch 2.10's MPS backend has multiple buggy Metal shaders
-# (masked_fill_scalar_strided_32bit, mul_dense_scalar_float_float) that crash
-# with fatal Metal validation assertions. The DiT model is forced to CPU to
-# avoid these. The LM uses MLX (native Apple Silicon) so it's still fast.
+# Note: PYTORCH_ENABLE_MPS_FALLBACK=1 is set above to handle PyTorch MPS
+# Metal shader bugs. The pipeline uses cpu_offload=True + float32 for stability.
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -88,10 +86,9 @@ MODEL_REGISTRY = {
 
 # MARK: - Model Caches
 
-# ACE-Step v1.5 handlers (separate DiT + LM architecture)
-_acestep_dit_handler = None
-_acestep_llm_handler = None
-_acestep_initialized = False
+# ACE-Step v1.5 pipeline (replaces separate handler architecture)
+_pipeline = None
+_pipeline_initialized = False
 
 # Configuration
 MODEL_CACHE_DIR = Path.home() / ".cache" / "loopmaker" / "models"
@@ -112,6 +109,9 @@ class GenerationRequest(BaseModel):
     lyrics: Optional[str] = None
     quality_mode: str = "fast"  # "draft" (4 steps), "fast" (8 steps), or "quality" (50 steps)
     guidance_scale: float = 7.0  # v1.5 default (was 15.0 in v1)
+    task_type: str = "text2music"  # "text2music" or "cover"
+    source_audio_path: Optional[str] = None  # absolute path for cover mode
+    ref_audio_strength: float = 0.5  # 0.0-1.0, how much reference audio influences output
 
 
 class GenerationResponse(BaseModel):
@@ -137,133 +137,96 @@ def get_device() -> str:
 
 # MARK: - Model Loaders
 
-def _ensure_acestep_weights_downloaded():
-    """Ensure ACE-Step model weights are actually downloaded.
+ACE_STEP_REPO_ID = "ACE-Step/ACE-Step-v1-3.5B"
+ACE_STEP_CACHE_DIR = Path.home() / ".cache" / "ace-step" / "checkpoints"
 
-    The pip install of ACE-Step v1.5 creates the checkpoints/ directory structure
-    with config files but NOT the large model weight files (Git LFS).
-    The handler's check_main_model_exists() only checks directory existence,
-    so it gets fooled. We explicitly check for weight files and download if missing.
+
+def _resolve_checkpoint_dir() -> str:
+    """Resolve the ACE-Step checkpoint directory.
+
+    First tries local cache (instant), then falls back to snapshot_download
+    which will download weights if missing (~8GB).
     """
-    import acestep
-    from acestep.model_downloader import (
-        download_main_model,
-        download_submodel,
-        check_model_exists,
-    )
+    from huggingface_hub import snapshot_download
 
-    # The handler's _get_project_root() returns parent of acestep package dir
-    project_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(acestep.__file__))))
-    checkpoint_dir = project_root / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    ACE_STEP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Check for actual model weight files (not just directory existence).
-    # Weight files can be model.safetensors, pytorch_model.bin, or sharded variants.
-    def _has_weight_files(model_dir: Path) -> bool:
-        if not model_dir.exists():
-            return False
-        return (
-            any(model_dir.glob("model*.safetensors"))
-            or any(model_dir.glob("pytorch_model*.bin"))
+    # Fast path: try local-only resolution first (avoids HF API call)
+    try:
+        path = snapshot_download(
+            ACE_STEP_REPO_ID,
+            cache_dir=str(ACE_STEP_CACHE_DIR),
+            local_files_only=True,
         )
+        # Verify required subdirectories exist
+        required = ["music_dcae_f8c8", "music_vocoder", "ace_step_transformer", "umt5-base"]
+        if all(os.path.exists(os.path.join(path, d)) for d in required):
+            print(f"ACE-Step checkpoint resolved from cache: {path}")
+            return path
+    except Exception:
+        pass
 
-    dit_dir = checkpoint_dir / "acestep-v15-turbo"
-    qwen_dir = checkpoint_dir / "Qwen3-Embedding-0.6B"
-
-    if not _has_weight_files(dit_dir) or not _has_weight_files(qwen_dir):
-        print("ACE-Step model weights not found — downloading from HuggingFace...")
-        print(f"Destination: {checkpoint_dir}")
-        print("This may take 5-30 minutes depending on your connection (~5GB)...")
-        success, msg = download_main_model(checkpoint_dir, force=True)
-        if not success:
-            raise RuntimeError(f"Failed to download ACE-Step main model: {msg}")
-        print(f"Main model download: {msg}")
-
-    # Download 0.6B LM separately (not included in main model, which has 1.7B)
-    lm_dir = checkpoint_dir / "acestep-5Hz-lm-0.6B"
-    if not _has_weight_files(lm_dir):
-        print("Downloading ACE-Step 0.6B LM model...")
-        success, msg = download_submodel("acestep-5Hz-lm-0.6B", checkpoint_dir)
-        if not success:
-            print(f"WARNING: Failed to download 0.6B LM: {msg}")
-            print("Generation will work without prompt enhancement.")
-        else:
-            print(f"LM download: {msg}")
-
-    return str(checkpoint_dir)
+    # Slow path: download from HuggingFace
+    print(f"Downloading ACE-Step model from HuggingFace ({ACE_STEP_REPO_ID})...")
+    print("This may take 5-30 minutes depending on your connection (~8GB)...")
+    path = snapshot_download(
+        ACE_STEP_REPO_ID,
+        cache_dir=str(ACE_STEP_CACHE_DIR),
+    )
+    print(f"ACE-Step checkpoint downloaded to: {path}")
+    return path
 
 
-def load_acestep_model():
-    """Load ACE-Step v1.5 model with Mac-specific configuration.
+def _load_pipeline():
+    """Load ACE-Step pipeline with Mac-specific configuration.
 
-    v1.5 uses a two-handler architecture:
-    - AceStepHandler (DiT): The audio generation model (~2B params)
-    - LLMHandler (LM): Optional language model for prompt enhancement (0.6B-4B)
+    Uses ACEStepPipeline which handles both DiT + codec internally.
+    Resolves checkpoint path locally first to avoid slow HF API calls.
     """
-    global _acestep_dit_handler, _acestep_llm_handler, _acestep_initialized
+    global _pipeline, _pipeline_initialized
 
-    if _acestep_initialized:
-        return _acestep_dit_handler, _acestep_llm_handler
+    if _pipeline_initialized:
+        return _pipeline
 
     try:
-        from acestep.handler import AceStepHandler
-        from acestep.llm_inference import LLMHandler
+        from acestep.pipeline_ace_step import ACEStepPipeline
     except ImportError:
         raise ImportError(
-            "ACE-Step v1.5 not installed. Install with: "
+            "ACE-Step not installed. Install with: "
             "pip install git+https://github.com/ace-step/ACE-Step-1.5.git"
         )
-
-    is_mac = platform.system() == "Darwin"
 
     # Clear memory before loading
     _clear_mps_cache()
 
-    # Ensure model weights are actually downloaded (pip install only gets configs)
-    checkpoint_dir = _ensure_acestep_weights_downloaded()
+    # Resolve checkpoint path (fast from local cache, slow download if missing)
+    checkpoint_dir = _resolve_checkpoint_dir()
 
-    # On Mac, force CPU for DiT inference. PyTorch 2.10's MPS backend has
-    # multiple buggy Metal shaders (masked_fill_scalar_strided_32bit,
-    # mul_dense_scalar_float_float) that crash with fatal Metal validation
-    # assertions. CPU is slower but reliable. The LM uses MLX (native Apple
-    # Silicon) so it's still fast. Can revisit when PyTorch fixes MPS shaders.
-    dit_device = "cpu" if is_mac else "auto"
-
-    print(f"Loading ACE-Step v1.5 DiT model (acestep-v15-turbo) on {dit_device}...")
-    _acestep_dit_handler = AceStepHandler()
-    status_msg, ready = _acestep_dit_handler.initialize_service(
-        project_root="",  # Handler auto-detects via _get_project_root()
-        config_path="acestep-v15-turbo",
-        device=dit_device,
-        use_flash_attention=False,
-        compile_model=False,
-        offload_to_cpu=False,  # Already on CPU, no need to offload
-        offload_dit_to_cpu=False,
+    print("Loading ACE-Step pipeline...")
+    _pipeline = ACEStepPipeline(
+        checkpoint_dir=checkpoint_dir,
+        dtype="float32",
+        torch_compile=False,
+        cpu_offload=True,
     )
-    print(f"DiT status: {status_msg}")
 
-    if not ready:
-        raise RuntimeError(f"Failed to initialize ACE-Step DiT: {status_msg}")
+    # Force CPU device on Mac. PyTorch MPS has multiple fatal Metal shader bugs
+    # (sub_dense_scalar_lhs_float_float, masked_fill_scalar_strided_32bit, etc.)
+    # that crash with validateComputeFunctionArguments assertions.
+    # PYTORCH_ENABLE_MPS_FALLBACK=1 can't catch fatal assertions.
+    if platform.system() == "Darwin":
+        _pipeline.device = torch.device("cpu")
+        print("Forced CPU device (MPS Metal shaders are buggy)")
 
-    # Load 0.6B LM for prompt enhancement (smallest variant for 16GB Macs)
-    print("Loading ACE-Step v1.5 LM (0.6B)...")
-    _acestep_llm_handler = LLMHandler()
-    lm_status, lm_ready = _acestep_llm_handler.initialize(
-        checkpoint_dir=checkpoint_dir,  # Must point to actual checkpoints dir
-        lm_model_path="acestep-5Hz-lm-0.6B",
-        backend="mlx" if is_mac else "pt",  # MLX for native Apple Silicon acceleration
-        device="auto",
-        offload_to_cpu=is_mac,
-    )
-    print(f"LM status: {lm_status}")
+    # Pre-load the checkpoint so first generation isn't slow
+    if not _pipeline.loaded:
+        print("Loading model weights into memory...")
+        _pipeline.load_checkpoint(checkpoint_dir)
 
-    if not lm_ready:
-        # LM is optional — generation works without it, just less refined prompts
-        print("WARNING: LM failed to load, generation will work without prompt enhancement")
-        _acestep_llm_handler = None
+    print("ACE-Step pipeline loaded successfully")
 
-    _acestep_initialized = True
-    return _acestep_dit_handler, _acestep_llm_handler
+    _pipeline_initialized = True
+    return _pipeline
 
 
 # MARK: - Health Endpoint
@@ -273,7 +236,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "models_loaded": ["acestep"] if _acestep_initialized else [],
+        "models_loaded": ["acestep"] if _pipeline_initialized else [],
         "device": get_device()
     }
 
@@ -285,11 +248,25 @@ async def get_model_status():
     """Check which models are downloaded and their capabilities"""
     status = {}
     for name, info in MODEL_REGISTRY.items():
-        cache_path = MODEL_CACHE_DIR / name
-        is_loaded = name == "acestep" and _acestep_initialized
+        is_loaded = name == "acestep" and _pipeline_initialized
+
+        # Check if model weights exist in cache
+        is_downloaded = is_loaded
+        if name == "acestep" and not is_downloaded:
+            try:
+                from huggingface_hub import snapshot_download
+                path = snapshot_download(
+                    ACE_STEP_REPO_ID,
+                    cache_dir=str(ACE_STEP_CACHE_DIR),
+                    local_files_only=True,
+                )
+                required = ["music_dcae_f8c8", "music_vocoder", "ace_step_transformer", "umt5-base"]
+                is_downloaded = all(os.path.exists(os.path.join(path, d)) for d in required)
+            except Exception:
+                is_downloaded = False
 
         status[name] = {
-            "downloaded": cache_path.exists() or is_loaded,
+            "downloaded": is_downloaded,
             "loaded": is_loaded,
             "size_gb": info.size_gb,
             "max_duration": info.max_duration,
@@ -318,7 +295,7 @@ async def download_model(request: DownloadRequest):
             loop = asyncio.get_event_loop()
             load_future = loop.run_in_executor(
                 _executor,
-                load_acestep_model,
+                _load_pipeline,
             )
 
             # Send keepalive progress updates every 5 seconds while model downloads
@@ -382,9 +359,8 @@ def _generate_acestep_sync(
 ) -> GenerationResponse:
     """Synchronous ACE-Step v1.5 generation with progress callbacks.
 
-    Uses the two-handler architecture:
-    - AceStepHandler (DiT) for audio generation
-    - LLMHandler (LM) for optional prompt enhancement
+    Uses ACEStepPipeline which handles both DiT + LM internally.
+    Supports text2music and cover (audio2audio) task types.
     """
     import tempfile
 
@@ -392,17 +368,9 @@ def _generate_acestep_sync(
     _clear_mps_cache()
 
     progress_cb(0.05, "Loading ACE-Step v1.5 model...")
-    dit_handler, llm_handler = load_acestep_model()
+    pipeline = _load_pipeline()
 
-    try:
-        from acestep.inference import generate_music as ace_generate, GenerationParams, GenerationConfig
-    except ImportError:
-        raise ImportError(
-            "ACE-Step v1.5 not installed. Install with: "
-            "pip install git+https://github.com/ace-step/ACE-Step-1.5.git"
-        )
-
-    # Quality mode determines inference steps and method
+    # Quality mode determines inference steps
     if request.quality_mode == "draft":
         infer_steps = 4
     elif request.quality_mode == "quality":
@@ -412,72 +380,110 @@ def _generate_acestep_sync(
 
     # Default to instrumental if no lyrics provided
     lyrics = request.lyrics if request.lyrics else "[inst]"
-    is_instrumental = lyrics == "[inst]"
 
-    # Determine if thinking (LM enhancement) should be enabled
-    use_thinking = llm_handler is not None
+    # Cover mode: audio2audio via reference audio
+    is_cover = request.task_type == "cover"
+
+    if is_cover and request.source_audio_path:
+        if not os.path.exists(request.source_audio_path):
+            raise FileNotFoundError(f"Source audio not found: {request.source_audio_path}")
+
+    # Infer duration from source audio if cover mode and duration is 0
+    duration = float(request.duration)
+    if is_cover and duration == 0 and request.source_audio_path:
+        try:
+            sr, audio = wavfile.read(request.source_audio_path)
+            duration = len(audio) / sr
+        except Exception:
+            duration = 30.0  # fallback
 
     progress_cb(0.10, "Preparing generation parameters...")
-
-    # Set up v1.5 generation parameters
-    params = GenerationParams(
-        task_type="text2music",
-        caption=request.prompt,
-        lyrics=lyrics,
-        instrumental=is_instrumental,
-        duration=float(request.duration),
-        inference_steps=infer_steps,
-        seed=request.seed if request.seed is not None else -1,  # -1 = random
-        guidance_scale=request.guidance_scale,
-        shift=1.0,  # Default for turbo models
-        infer_method="ode",
-        thinking=use_thinking,
-        lm_temperature=0.85,
-        lm_cfg_scale=2.0,
-        use_cot_metas=use_thinking,
-        use_cot_caption=use_thinking,
-        use_cot_language=use_thinking,
-    )
-
-    config = GenerationConfig(
-        batch_size=1,
-        allow_lm_batch=False,
-        use_random_seed=(request.seed is None),
-        audio_format="wav",
-    )
 
     # Create temp directory for output
     temp_dir = tempfile.mkdtemp(prefix="loopmaker_")
 
     try:
-        progress_cb(0.15, "Generating audio (ACE-Step v1.5)...")
+        task_label = "Creating cover" if is_cover else "Generating audio"
+        progress_cb(0.15, f"{task_label} (ACE-Step v1.5)...")
 
-        # Run generation
-        result = ace_generate(
-            dit_handler=dit_handler,
-            llm_handler=llm_handler,
-            params=params,
-            config=config,
-            save_dir=temp_dir,
-        )
+        # Build seed list
+        manual_seeds = [request.seed] if request.seed is not None else None
 
-        if not result.success:
-            raise RuntimeError(f"ACE-Step generation failed: {result.status_message}")
+        # Monkey-patch tqdm to forward diffusion step progress (0.15 → 0.85)
+        import tqdm as _tqdm_module
+        _orig_tqdm_init = _tqdm_module.tqdm.__init__
+        _orig_tqdm_update = _tqdm_module.tqdm.update
+
+        def _patched_init(self, *args, **kwargs):
+            _orig_tqdm_init(self, *args, **kwargs)
+
+        def _patched_update(self, n=1):
+            _orig_tqdm_update(self, n)
+            if self.total and self.total > 0:
+                pct = self.n / self.total
+                mapped = 0.15 + pct * 0.70  # Map 0-1 → 0.15-0.85
+                progress_cb(mapped, f"{task_label} (step {self.n}/{self.total})...")
+
+        _tqdm_module.tqdm.__init__ = _patched_init
+        _tqdm_module.tqdm.update = _patched_update
+
+        # Call pipeline directly
+        print("Calling ACE-Step pipeline...")
+        import time as _time
+        _t0 = _time.time()
+        try:
+            result = pipeline(
+                prompt=request.prompt,
+                lyrics=lyrics,
+                audio_duration=duration,
+                infer_step=infer_steps,
+                guidance_scale=request.guidance_scale,
+                scheduler_type="euler",
+                cfg_type="apg",
+                omega_scale=10.0,
+                audio2audio_enable=is_cover,
+                ref_audio_input=request.source_audio_path if is_cover else None,
+                ref_audio_strength=request.ref_audio_strength if is_cover else 0.5,
+                save_path=temp_dir,
+                batch_size=1,
+                format="wav",
+                manual_seeds=manual_seeds,
+            )
+        finally:
+            # Restore original tqdm
+            _tqdm_module.tqdm.__init__ = _orig_tqdm_init
+            _tqdm_module.tqdm.update = _orig_tqdm_update
+
+        print(f"Pipeline returned in {_time.time() - _t0:.1f}s, result type: {type(result)}")
+        print(f"Pipeline result: {result}")
 
         progress_cb(0.85, "Processing audio...")
 
-        # Find the generated audio file
-        generated_files = list(Path(temp_dir).glob("*.wav"))
-        if not generated_files:
-            # Try other formats
-            generated_files = list(Path(temp_dir).glob("*.flac")) + list(Path(temp_dir).glob("*.mp3"))
+        # result is a list: [audio_path_0, ..., input_params_dict]
+        # Find the first audio file path from the result
+        output_audio_path = None
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, str) and Path(item).exists() and item.endswith(".wav"):
+                    output_audio_path = item
+                    break
 
-        if not generated_files:
+        # Fallback: search temp dir for generated WAV files
+        if not output_audio_path:
+            generated_files = list(Path(temp_dir).glob("**/*.wav"))
+            if not generated_files:
+                generated_files = list(Path(temp_dir).glob("**/*.flac")) + list(Path(temp_dir).glob("**/*.mp3"))
+            if generated_files:
+                output_audio_path = str(generated_files[0])
+
+        print(f"Output audio path: {output_audio_path}")
+        if not output_audio_path:
             raise RuntimeError("ACE-Step generated no audio files")
 
-        # Read the first generated file
-        temp_audio_path = str(generated_files[0])
-        sample_rate, audio_data = wavfile.read(temp_audio_path)
+        # Read the generated file
+        print(f"Reading generated WAV file...")
+        sample_rate, audio_data = wavfile.read(output_audio_path)
+        print(f"WAV read: sr={sample_rate}, shape={audio_data.shape}, dtype={audio_data.dtype}")
 
         # Convert to float for normalization
         if audio_data.dtype == np.int16:
@@ -500,13 +506,17 @@ def _generate_acestep_sync(
         audio_int16 = (audio_float * 32767).astype(np.int16)
 
         # Write normalized WAV to shared tracks directory
-        output_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
-        wavfile.write(str(output_path), sample_rate, audio_int16)
+        final_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
+        print(f"Writing final WAV to {final_path}...")
+        wavfile.write(str(final_path), sample_rate, audio_int16)
+        print(f"Final WAV written: {os.path.getsize(final_path)} bytes")
 
+        duration_secs = len(audio_float) / sample_rate
+        print(f"Returning response: path={final_path}, sr={sample_rate}, duration={duration_secs:.1f}s")
         return GenerationResponse(
-            audio_path=str(output_path),
+            audio_path=str(final_path),
             sample_rate=sample_rate,
-            duration=len(audio_float) / sample_rate,
+            duration=duration_secs,
         )
 
     finally:
@@ -546,8 +556,10 @@ async def ws_generate(websocket: WebSocket):
     try:
         # 1. Receive generation request from client
         raw = await websocket.receive_text()
+        print(f"WebSocket: received request: {raw[:500]}")
         data = json.loads(raw)
         request = GenerationRequest(**data)
+        print(f"WebSocket: parsed request OK - task_type={request.task_type}, model={request.model}")
 
         # Validate model
         model_info = MODEL_REGISTRY.get(request.model)
@@ -561,6 +573,21 @@ async def ws_generate(websocket: WebSocket):
                 "detail": f"Max duration for {request.model} is {model_info.max_duration}s, got {request.duration}s",
             })
             return
+
+        # Validate cover mode params
+        if request.task_type == "cover":
+            if not request.source_audio_path:
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": "Cover mode requires source_audio_path",
+                })
+                return
+            if not os.path.exists(request.source_audio_path):
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": f"Source audio not found: {request.source_audio_path}",
+                })
+                return
 
         # 2. Set up progress queue (thread-safe bridge from sync -> async)
         progress_queue: queue.Queue = queue.Queue()
@@ -607,7 +634,9 @@ async def ws_generate(websocket: WebSocket):
             pass
 
         # 6. Get result or propagate error
+        print("WebSocket: getting generation result...")
         result: GenerationResponse = gen_future.result()
+        print(f"WebSocket: sending complete response - {result.audio_path}")
 
         await websocket.send_json({
             "type": "complete",
@@ -615,11 +644,15 @@ async def ws_generate(websocket: WebSocket):
             "sample_rate": result.sample_rate,
             "duration": result.duration,
         })
+        print("WebSocket: complete message sent successfully")
 
     except WebSocketDisconnect:
         # Client disconnected (e.g. cancelled) - nothing to do
-        pass
+        print("WebSocket: client disconnected")
     except Exception as e:
+        import traceback
+        print(f"WebSocket generation error: {e}")
+        traceback.print_exc()
         try:
             await websocket.send_json({"type": "error", "detail": str(e)})
         except Exception:
@@ -631,12 +664,11 @@ async def ws_generate(websocket: WebSocket):
 @app.delete("/models/{model_name}")
 async def delete_model(model_name: str):
     """Unload a model from memory"""
-    global _acestep_dit_handler, _acestep_llm_handler, _acestep_initialized
+    global _pipeline, _pipeline_initialized
 
-    if model_name == "acestep" and _acestep_initialized:
-        _acestep_dit_handler = None
-        _acestep_llm_handler = None
-        _acestep_initialized = False
+    if model_name == "acestep" and _pipeline_initialized:
+        _pipeline = None
+        _pipeline_initialized = False
         _clear_mps_cache()
         return {"status": "deleted", "model": model_name}
 

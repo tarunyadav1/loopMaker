@@ -78,6 +78,7 @@ public final class BackendProcessManager: ObservableObject {
 
     private var backendProcess: Process?
     private var healthCheckTask: Task<Void, Never>?
+    private var isStarting = false
     private let logger = Logger(subsystem: "com.loopmaker.LoopMaker", category: "BackendProcess")
 
     // MARK: - Paths
@@ -108,11 +109,31 @@ public final class BackendProcessManager: ObservableObject {
             .appendingPathComponent("Python.framework/Versions/3.11/bin/python3", isDirectory: false)
     }
 
-    /// In dev mode (no bundled backend), resolve the source backend directory.
-    /// This avoids fragile file-copying and runs uvicorn directly from source.
+    /// Pre-installed site-packages bundled inside the .app for zero-download distribution.
+    private var bundledSitePackagesURL: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent("backend", isDirectory: true)
+            .appendingPathComponent("site-packages", isDirectory: true)
+    }
+
+    /// True when the .app contains pre-bundled Python + site-packages (no pip install needed).
+    private var isBundledMode: Bool {
+        guard let sitePackages = bundledSitePackagesURL,
+              let python = bundledPythonURL else { return false }
+        return FileManager.default.fileExists(atPath: sitePackages.path)
+            && FileManager.default.isExecutableFile(atPath: python.path)
+    }
+
+    /// Sentinel file written after successful pip install.
+    /// Distinguishes a complete venv from one that failed mid-install.
+    private var setupCompleteURL: URL {
+        venvURL.appendingPathComponent(".setup-complete")
+    }
+
+    /// In dev mode (debug build from source tree), resolve the source backend directory.
+    /// Only compiled in DEBUG to avoid leaking the build machine path in release binaries.
     private var sourceBackendURL: URL? {
-        // Navigate from this Swift source file to the project root's backend/ dir
-        // BackendProcessManager.swift → Backend/ → Services/ → LoopMaker/ → project root
+        #if DEBUG
         let thisFile = URL(fileURLWithPath: #filePath)
         let projectRoot = thisFile
             .deletingLastPathComponent()
@@ -124,12 +145,39 @@ public final class BackendProcessManager: ObservableObject {
         if FileManager.default.fileExists(atPath: mainPy.path) {
             return candidate
         }
+        #endif
         return nil
     }
 
-    /// The directory where uvicorn should run (source dir in dev, App Support in prod)
+    /// The directory where uvicorn should run.
+    /// Bundled: Resources/backend/ inside the .app
+    /// Dev: source tree's backend/
+    /// Prod unbundled: App Support backend/
     private var backendWorkingURL: URL {
-        sourceBackendURL ?? backendURL
+        if isBundledMode, let bundled = bundledBackendURL {
+            return bundled
+        }
+        return sourceBackendURL ?? backendURL
+    }
+
+    /// Whether we're running from a debug build with access to the source tree
+    private var isDevMode: Bool {
+        sourceBackendURL != nil
+    }
+
+    /// The single venv all methods should use.
+    /// Dev mode: source tree's `backend/.venv/` (must be pre-created by the developer).
+    /// Prod mode: App Support's `.venv/` (created on first launch).
+    /// This eliminates the split-brain where venv creation targeted App Support
+    /// but launchBackend preferred the source tree's venv.
+    private var activeVenvURL: URL {
+        if let sourceDir = sourceBackendURL {
+            let sourceVenv = sourceDir.appendingPathComponent(".venv", isDirectory: true)
+            if FileManager.default.fileExists(atPath: sourceVenv.path) {
+                return sourceVenv
+            }
+        }
+        return venvURL
     }
 
     // MARK: - Initialization
@@ -145,30 +193,75 @@ public final class BackendProcessManager: ObservableObject {
 
     /// Main entry point: ensures backend is running, setting up if necessary
     public func ensureBackendRunning() async {
-        state = .checkingPython
+        guard !isStarting, state != .running else { return }
+        isStarting = true
+        defer { isStarting = false }
 
         // Clean up any orphaned processes
         await cleanupOrphanedProcesses()
 
-        // Check for Python
+        // Bundled mode: skip all setup, launch directly with bundled Python + site-packages
+        if isBundledMode {
+            logger.info("Bundled mode: using pre-installed Python and site-packages")
+            do {
+                state = .startingBackend
+                setupProgress = 0.9
+                try await launchBackend()
+
+                state = .waitingForHealth
+                try await waitForHealthy()
+
+                setupProgress = 1.0
+                state = .running
+                startHealthMonitoring()
+            } catch {
+                state = .error("Could not start backend: \(error.localizedDescription)")
+            }
+            return
+        }
+
+        // Non-bundled mode: check Python and venv
+        state = .checkingPython
+
         guard let pythonPath = await detectPython() else {
             state = .pythonMissing
             return
         }
 
-        // Check if venv exists
+        // Check if the active venv exists AND completed setup successfully.
+        // A venv directory without the sentinel file means pip install failed mid-way.
         state = .checkingVenv
-        isFirstLaunch = !FileManager.default.fileExists(atPath: venvURL.path)
+        let venvExists = FileManager.default.fileExists(atPath: activeVenvURL.path)
+        let setupComplete = FileManager.default.fileExists(atPath: setupCompleteURL.path)
+        let needsSetup = !venvExists || (!setupComplete && !isDevMode)
+        isFirstLaunch = needsSetup
 
-        if isFirstLaunch {
-            // First launch setup
+        if needsSetup {
+            if isDevMode {
+                state = .error(
+                    "Dev mode: no venv found at backend/.venv/. "
+                    + "Run: cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+                )
+                return
+            }
+
+            // Prod unbundled: first launch or broken venv recovery
             do {
+                // Remove any half-installed venv before starting fresh
+                if venvExists && !setupComplete {
+                    logger.warning("Found incomplete venv, removing for fresh install...")
+                    try? FileManager.default.removeItem(at: venvURL)
+                }
+
                 state = .creatingVenv
                 setupProgress = 0.1
                 try await createVenv(pythonPath: pythonPath)
 
                 setupProgress = 0.2
                 try await installDependencies()
+
+                // Write sentinel to mark successful setup
+                try "ok".write(to: setupCompleteURL, atomically: true, encoding: .utf8)
 
                 setupProgress = 0.9
             } catch {
@@ -188,6 +281,7 @@ public final class BackendProcessManager: ObservableObject {
 
             setupProgress = 1.0
             state = .running
+            startHealthMonitoring()
         } catch {
             state = .error("Could not start backend: \(error.localizedDescription)")
         }
@@ -225,11 +319,59 @@ public final class BackendProcessManager: ObservableObject {
         logger.info("Backend stopped")
     }
 
-    /// Retry setup after an error
+    /// Synchronous termination for use in the app termination handler.
+    /// Sends SIGTERM immediately without waiting for graceful shutdown.
+    public func terminateBackendNow() {
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
+        backendProcess?.terminate()
+        backendProcess = nil
+        cleanupPidFile()
+    }
+
+    /// Retry setup after an error. Removes any broken venv to force fresh install.
     public func retrySetup() async {
         state = .notStarted
         setupProgress = 0
+        // Remove broken venv so setup re-triggers
+        if !isDevMode && !isBundledMode {
+            try? FileManager.default.removeItem(at: venvURL)
+        }
         await ensureBackendRunning()
+    }
+
+    // MARK: - Health Monitoring
+
+    /// Periodically check backend health after reaching .running state.
+    /// Detects process crashes and unresponsive backends.
+    private func startHealthMonitoring() {
+        healthCheckTask?.cancel()
+        healthCheckTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { break }
+
+                // Fast check: is the process still alive?
+                if backendProcess?.isRunning != true {
+                    logger.error("Backend process died unexpectedly")
+                    state = .error("Backend process died unexpectedly")
+                    break
+                }
+
+                // Slow check: is the HTTP endpoint responding?
+                let healthURL = URL(string: "http://127.0.0.1:8000/health")!
+                do {
+                    let (_, response) = try await URLSession.shared.data(from: healthURL)
+                    if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                        logger.warning("Backend health check returned \(http.statusCode)")
+                    }
+                } catch {
+                    // Process is running but not responding — could be busy with generation.
+                    // Only log; the process-alive check above catches actual crashes.
+                    logger.warning("Backend health check failed: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     // MARK: - Python Detection
@@ -328,24 +470,20 @@ public final class BackendProcessManager: ObservableObject {
     }
 
     private func copyBundledBackendFiles() throws {
-        guard let bundledBackend = bundledBackendURL else {
-            // Development mode: use backend files from source
-            let sourceBackend = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("backend", isDirectory: true)
-
-            if FileManager.default.fileExists(atPath: sourceBackend.path) {
-                try copyBackendFiles(from: sourceBackend)
-                return
-            }
-
-            throw BackendSetupError.backendFilesNotFound
+        // Prefer bundled backend files from inside the .app
+        if let bundledBackend = bundledBackendURL,
+           FileManager.default.fileExists(atPath: bundledBackend.path) {
+            try copyBackendFiles(from: bundledBackend)
+            return
         }
 
-        try copyBackendFiles(from: bundledBackend)
+        // Dev mode: use backend files from source tree
+        if let sourceBackend = sourceBackendURL {
+            try copyBackendFiles(from: sourceBackend)
+            return
+        }
+
+        throw BackendSetupError.backendFilesNotFound
     }
 
     private func copyBackendFiles(from source: URL) throws {
@@ -375,19 +513,34 @@ public final class BackendProcessManager: ObservableObject {
 
         state = .installingDependencies(progress: 0)
 
-        let pipPath = venvURL.appendingPathComponent("bin/pip")
-        let requirementsPath = backendURL.appendingPathComponent("requirements.txt")
+        let pipPath = activeVenvURL.appendingPathComponent("bin/pip")
+        let requirementsPath = backendWorkingURL.appendingPathComponent("requirements.txt")
 
         let process = Process()
         process.executableURL = pipPath
         process.arguments = ["install", "-r", requirementsPath.path, "--quiet"]
         process.currentDirectoryURL = backendURL
 
-        // Capture output for progress estimation
+        // Drain stdout/stderr asynchronously to prevent pipe buffer deadlock.
+        // If the buffer (~64KB) fills and nobody reads, the process blocks on write
+        // and runProcessAndWait never returns.
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
+
+        // Collect stderr for error reporting
+        let errorBuffer = PipeBuffer()
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                errorBuffer.append(data)
+            }
+        }
+        // Discard stdout (just drain it)
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
 
         // Simulate progress while installing (pip doesn't give good progress)
         let progressTask = Task {
@@ -404,9 +557,12 @@ public final class BackendProcessManager: ObservableObject {
 
         try await runProcessAndWait(process)
 
+        // Stop draining now that the process has exited
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+
         guard process.terminationStatus == 0 else {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            let errorMessage = errorBuffer.string ?? "Unknown error"
             logger.error("pip install failed: \(errorMessage)")
             throw BackendSetupError.dependencyInstallFailed(errorMessage)
         }
@@ -420,19 +576,39 @@ public final class BackendProcessManager: ObservableObject {
     private func launchBackend() async throws {
         logger.info("Launching backend server...")
 
-        let pythonPath = venvURL.appendingPathComponent("bin/python")
+        // Check if port 8000 is already in use by another process
+        if let lsofOutput = await runShellCommand("lsof -i :8000 -t"),
+           !lsofOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            logger.error("Port 8000 is already in use")
+            throw BackendSetupError.portConflict
+        }
+
+        let workingDir = backendWorkingURL
+        let pythonPath: URL
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+
+        if isBundledMode {
+            // Bundled mode: use bundled Python with PYTHONPATH for pre-installed packages
+            pythonPath = bundledPythonURL!
+            if let sitePackages = bundledSitePackagesURL {
+                env["PYTHONPATH"] = sitePackages.path
+            }
+        } else {
+            // Venv mode: use the venv's Python (which already knows its site-packages)
+            pythonPath = activeVenvURL.appendingPathComponent("bin/python")
+        }
 
         let process = Process()
         process.executableURL = pythonPath
         process.arguments = ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"]
-        let workingDir = backendWorkingURL
         process.currentDirectoryURL = workingDir
-        logger.info("Backend working directory: \(workingDir.path)")
-
-        // Set environment
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
         process.environment = env
+        logger.info("Backend working directory: \(workingDir.path)")
+        logger.info("Backend Python: \(pythonPath.path)")
+        if let pp = env["PYTHONPATH"] {
+            logger.info("PYTHONPATH: \(pp)")
+        }
 
         // Redirect output to logs
         let logPipe = Pipe()
@@ -461,6 +637,12 @@ public final class BackendProcessManager: ObservableObject {
         let startTime = Date()
 
         while Date().timeIntervalSince(startTime) < timeout {
+            // Bail immediately if the process already exited
+            if backendProcess?.isRunning != true {
+                logger.error("Backend process exited before becoming healthy")
+                throw BackendSetupError.backendStartFailed
+            }
+
             do {
                 let (_, response) = try await URLSession.shared.data(from: healthURL)
                 if let httpResponse = response as? HTTPURLResponse,
@@ -531,12 +713,21 @@ public final class BackendProcessManager: ObservableObject {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
+        // Drain stdout asynchronously to prevent pipe buffer deadlock
+        let buffer = PipeBuffer()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                buffer.append(data)
+            }
+        }
+
         do {
             try await runProcessAndWait(process)
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
+            pipe.fileHandleForReading.readabilityHandler = nil
+            return buffer.string
         } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
             return nil
         }
     }
@@ -558,6 +749,27 @@ public final class BackendProcessManager: ObservableObject {
     }
 }
 
+// MARK: - Pipe Buffer
+
+/// Thread-safe buffer for collecting pipe output from readabilityHandler callbacks.
+/// Prevents pipe buffer deadlock by draining data as it arrives.
+private final class PipeBuffer: @unchecked Sendable {
+    private var data = Data()
+    private let lock = NSLock()
+
+    func append(_ newData: Data) {
+        lock.lock()
+        data.append(newData)
+        lock.unlock()
+    }
+
+    var string: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
 // MARK: - Errors
 
 public enum BackendSetupError: LocalizedError {
@@ -567,6 +779,7 @@ public enum BackendSetupError: LocalizedError {
     case dependencyInstallFailed(String)
     case backendStartFailed
     case healthCheckTimeout
+    case portConflict
 
     public var errorDescription: String? {
         switch self {
@@ -582,6 +795,8 @@ public enum BackendSetupError: LocalizedError {
             return "Failed to start the music engine."
         case .healthCheckTimeout:
             return "Music engine failed to respond in time."
+        case .portConflict:
+            return "Port 8000 is already in use by another application. Please close it and try again."
         }
     }
 }

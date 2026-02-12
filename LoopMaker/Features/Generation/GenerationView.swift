@@ -11,6 +11,13 @@ struct GenerationView: View {
     @State private var suggestions: [SuggestionData] = SuggestionData.randomSet()
     @State private var showAdvanced = false
 
+    // Cover mode state
+    @State private var taskType: GenerationTaskType = .text2music
+    @State private var sourceAudioURL: URL?
+    @State private var coverVocalsMode: CoverVocalsMode = .instrumental
+    @State private var refAudioStrength: Double = 0.5
+    @State private var isDropTargeted = false
+
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
@@ -36,6 +43,24 @@ struct GenerationView: View {
 
     private var creationCard: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Mode toggle: Generate / Cover
+            modeToggle
+                .padding(Spacing.md)
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(height: 1)
+
+            // Audio drop zone (cover mode only)
+            if taskType == .cover {
+                audioDropZone
+                    .padding(Spacing.md)
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(height: 1)
+            }
+
             // Prompt area
             VStack(alignment: .leading, spacing: Spacing.sm) {
                 HStack(spacing: 6) {
@@ -43,7 +68,7 @@ struct GenerationView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(DesignSystem.Colors.accent)
 
-                    Text("Music Description")
+                    Text(taskType == .cover ? "Style Description" : "Music Description")
                         .font(Typography.captionMedium)
                         .foregroundStyle(DesignSystem.Colors.textSecondary)
 
@@ -63,7 +88,7 @@ struct GenerationView: View {
                     .frame(minHeight: 72, maxHeight: 120)
                     .overlay(alignment: .topLeading) {
                         if prompt.isEmpty {
-                            Text("Describe the music you want to create...")
+                            Text(promptPlaceholder)
                                 .font(Typography.body)
                                 .foregroundStyle(DesignSystem.Colors.textMuted)
                                 .padding(.top, 8)
@@ -82,20 +107,24 @@ struct GenerationView: View {
             // Controls footer: mode + duration + advanced toggle + create
             VStack(spacing: Spacing.md) {
                 HStack(spacing: Spacing.sm) {
-                    // Instrumental / Lyrics
-                    InlinePill(
-                        title: "Instrumental",
-                        icon: "pianokeys",
-                        isSelected: isInstrumental,
-                        action: { isInstrumental = true }
-                    )
+                    // Vocals mode pills (different for cover vs generate)
+                    if taskType == .cover {
+                        coverVocalsPills
+                    } else {
+                        InlinePill(
+                            title: "Instrumental",
+                            icon: "pianokeys",
+                            isSelected: isInstrumental,
+                            action: { isInstrumental = true }
+                        )
 
-                    InlinePill(
-                        title: "Lyrics",
-                        icon: "music.mic",
-                        isSelected: !isInstrumental,
-                        action: { isInstrumental = false }
-                    )
+                        InlinePill(
+                            title: "Lyrics",
+                            icon: "music.mic",
+                            isSelected: !isInstrumental,
+                            action: { isInstrumental = false }
+                        )
+                    }
 
                     Spacer()
 
@@ -144,8 +173,10 @@ struct GenerationView: View {
                     advancedOptions
                 }
 
-                // Lyrics (when in lyrics mode)
-                if !isInstrumental {
+                // Lyrics section
+                if taskType == .cover && coverVocalsMode == .newLyrics {
+                    lyricsSection
+                } else if taskType == .text2music && !isInstrumental {
                     lyricsSection
                 }
 
@@ -162,6 +193,133 @@ struct GenerationView: View {
             RoundedRectangle(cornerRadius: Spacing.radiusMd)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    // MARK: - Mode Toggle (Generate / Cover)
+
+    private var modeToggle: some View {
+        HStack(spacing: Spacing.sm) {
+            InlinePill(
+                title: GenerationTaskType.text2music.displayName,
+                icon: GenerationTaskType.text2music.icon,
+                isSelected: taskType == .text2music,
+                action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        taskType = .text2music
+                    }
+                }
+            )
+
+            InlinePill(
+                title: GenerationTaskType.cover.displayName,
+                icon: GenerationTaskType.cover.icon,
+                isSelected: taskType == .cover,
+                action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        taskType = .cover
+                    }
+                }
+            )
+
+            Spacer()
+        }
+    }
+
+    // MARK: - Audio Drop Zone (cover mode)
+
+    private var audioDropZone: some View {
+        Group {
+            if let url = sourceAudioURL {
+                // Selected file display
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(DesignSystem.Colors.accent)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(url.lastPathComponent)
+                            .font(Typography.bodyMedium)
+                            .foregroundStyle(DesignSystem.Colors.textPrimary)
+                            .lineLimit(1)
+
+                        Text("Source audio for cover")
+                            .font(Typography.caption)
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        sourceAudioURL = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(Spacing.md)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(DesignSystem.Colors.accent.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .strokeBorder(DesignSystem.Colors.accent.opacity(0.2), lineWidth: 1)
+                )
+            } else {
+                // Drop zone / browse
+                Button(action: browseAudio) {
+                    VStack(spacing: Spacing.sm) {
+                        Image(systemName: "arrow.down.doc")
+                            .font(.system(size: 24))
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+
+                        Text("Drop audio or click to browse")
+                            .font(Typography.captionMedium)
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                        Text("WAV, MP3, M4A, FLAC")
+                            .font(Typography.caption)
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.lg)
+                    .background(
+                        RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                            .fill(isDropTargeted ? DesignSystem.Colors.accent.opacity(0.08) : Color.primary.opacity(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                            .strokeBorder(
+                                isDropTargeted ? DesignSystem.Colors.accent : Color.primary.opacity(0.1),
+                                style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                    handleAudioDrop(providers)
+                }
+            }
+        }
+    }
+
+    // MARK: - Cover Vocals Pills
+
+    private var coverVocalsPills: some View {
+        ForEach(CoverVocalsMode.allCases, id: \.self) { mode in
+            InlinePill(
+                title: mode.displayName,
+                icon: mode.icon,
+                isSelected: coverVocalsMode == mode,
+                action: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        coverVocalsMode = mode
+                    }
+                }
+            )
+        }
     }
 
     // MARK: - Advanced Options (collapsed by default)
@@ -221,6 +379,23 @@ struct GenerationView: View {
                             action: { selectedQualityMode = mode }
                         )
                     }
+                }
+            }
+
+            // Style Strength slider (cover mode only)
+            if taskType == .cover {
+                HStack {
+                    Label("Style Strength", systemImage: "dial.medium")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                    Slider(value: $refAudioStrength, in: 0.1...0.9, step: 0.1)
+                        .tint(DesignSystem.Colors.accent)
+
+                    Text(String(format: "%.0f%%", refAudioStrength * 100))
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textPrimary)
+                        .frame(width: 36, alignment: .trailing)
                 }
             }
         }
@@ -295,7 +470,7 @@ struct GenerationView: View {
                         .frame(width: 18, height: 18)
                         .tint(.white)
                 } else {
-                    Image(systemName: "waveform")
+                    Image(systemName: taskType == .cover ? "arrow.triangle.2.circlepath" : "waveform")
                         .font(.system(size: 16, weight: .semibold))
                 }
 
@@ -417,7 +592,9 @@ struct GenerationView: View {
     // MARK: - Helpers
 
     private var canGenerate: Bool {
-        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && appState.canGenerate
+        let hasPrompt = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasSource = taskType == .text2music || sourceAudioURL != nil
+        return hasPrompt && hasSource && appState.canGenerate
     }
 
     private var buttonTitle: String {
@@ -427,20 +604,71 @@ struct GenerationView: View {
         if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
             return "Downloading Model..."
         }
-        return "Create"
+        return taskType == .cover ? "Create Cover" : "Create"
+    }
+
+    private var promptPlaceholder: String {
+        taskType == .cover
+            ? "Describe the style for your cover..."
+            : "Describe the music you want to create..."
     }
 
     private func generate() {
-        let effectiveLyrics: String? = isInstrumental ? nil : (lyrics.isEmpty ? nil : lyrics)
+        let effectiveLyrics: String?
+
+        if taskType == .cover {
+            switch coverVocalsMode {
+            case .keep:
+                effectiveLyrics = nil
+            case .instrumental:
+                effectiveLyrics = nil
+            case .newLyrics:
+                effectiveLyrics = lyrics.isEmpty ? nil : lyrics
+            }
+        } else {
+            effectiveLyrics = isInstrumental ? nil : (lyrics.isEmpty ? nil : lyrics)
+        }
 
         let request = GenerationRequest(
             prompt: prompt,
             duration: selectedDuration,
             model: appState.selectedModel,
             lyrics: effectiveLyrics,
-            qualityMode: selectedQualityMode
+            qualityMode: selectedQualityMode,
+            taskType: taskType,
+            sourceAudioURL: sourceAudioURL,
+            refAudioStrength: refAudioStrength
         )
         appState.startGeneration(request: request)
+    }
+
+    // MARK: - Audio File Handling
+
+    private func browseAudio() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Select an audio file to use as cover source"
+
+        if panel.runModal() == .OK {
+            sourceAudioURL = panel.url
+        }
+    }
+
+    private func handleAudioDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            let audioExtensions = ["wav", "mp3", "m4a", "flac", "aac", "aiff"]
+            if audioExtensions.contains(url.pathExtension.lowercased()) {
+                DispatchQueue.main.async {
+                    self.sourceAudioURL = url
+                }
+            }
+        }
+        return true
     }
 }
 

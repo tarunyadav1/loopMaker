@@ -21,6 +21,8 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
     public var title: String?
     public var isFavorite: Bool
     public var lyrics: String?
+    public var taskType: String?
+    public var sourceAudioName: String?
 
     public init(
         id: UUID = UUID(),
@@ -31,7 +33,9 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
         createdAt: Date = Date(),
         title: String? = nil,
         isFavorite: Bool = false,
-        lyrics: String? = nil
+        lyrics: String? = nil,
+        taskType: String? = nil,
+        sourceAudioName: String? = nil
     ) {
         self.id = id
         self.prompt = prompt
@@ -42,6 +46,13 @@ public struct Track: Identifiable, Codable, Sendable, Hashable {
         self.title = title
         self.isFavorite = isFavorite
         self.lyrics = lyrics
+        self.taskType = taskType
+        self.sourceAudioName = sourceAudioName
+    }
+
+    /// Whether this track was created via cover/style transfer
+    public var isCover: Bool {
+        taskType == "cover"
     }
 
     /// Display title - custom title or truncated prompt

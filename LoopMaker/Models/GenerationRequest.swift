@@ -33,6 +33,9 @@ public struct GenerationRequest: Sendable {
     public let lyrics: String?
     public let qualityMode: QualityMode
     public let guidanceScale: Double
+    public let taskType: GenerationTaskType
+    public let sourceAudioURL: URL?
+    public let refAudioStrength: Double
 
     public init(
         prompt: String,
@@ -42,7 +45,10 @@ public struct GenerationRequest: Sendable {
         seed: UInt64? = nil,
         lyrics: String? = nil,
         qualityMode: QualityMode = .fast,
-        guidanceScale: Double = 7.0  // v1.5 default (was 15.0 in v1)
+        guidanceScale: Double = 7.0,
+        taskType: GenerationTaskType = .text2music,
+        sourceAudioURL: URL? = nil,
+        refAudioStrength: Double = 0.5
     ) {
         self.prompt = prompt
         self.duration = duration
@@ -52,6 +58,9 @@ public struct GenerationRequest: Sendable {
         self.lyrics = lyrics
         self.qualityMode = qualityMode
         self.guidanceScale = guidanceScale
+        self.taskType = taskType
+        self.sourceAudioURL = sourceAudioURL
+        self.refAudioStrength = refAudioStrength
     }
 
     /// Full prompt (genre text is now included directly in the prompt field)
