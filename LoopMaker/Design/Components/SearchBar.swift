@@ -5,7 +5,7 @@ import SwiftUI
 struct SearchBar: View {
     @Binding var text: String
     var placeholder: String = "Search..."
-    var showShortcut: Bool = true
+    var showShortcut: Bool = false
     var onCommit: () -> Void = {}
 
     @FocusState private var isFocused: Bool

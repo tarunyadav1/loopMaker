@@ -36,17 +36,17 @@ public enum ModelType: String, CaseIterable, Codable, Sendable {
 
     /// Human-readable display name
     public var displayName: String {
-        "ACE-Step"
+        "LoopMaker AI"
     }
 
     /// Description for UI
     public var modelDescription: String {
-        "2B+0.6B params, lyrics & vocals, up to 4min"
+        "Lyrics & vocals, up to 4min"
     }
 
     /// Parameter count
     public var parameters: String {
-        "2.6B"  // v1.5: 2B DiT + 0.6B LM
+        ""
     }
 
     /// Icon for model

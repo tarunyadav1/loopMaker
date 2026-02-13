@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct GenerationView: View {
@@ -8,8 +9,25 @@ struct GenerationView: View {
     @State private var isInstrumental = true
     @State private var lyrics = ""
     @State private var selectedQualityMode: QualityMode = .fast
-    @State private var suggestions: [SuggestionData] = SuggestionData.randomSet()
+    @State private var suggestions: [SuggestionData] = SuggestionData.randomSet(for: .text2music)
     @State private var showAdvanced = false
+
+    // Seed state
+    @State private var seedText = ""
+    @State private var lockSeed = false
+    @State private var lastUsedSeed: UInt64?
+
+    // Batch variations
+    @State private var batchSize = 1
+
+    // Guidance scale
+    @State private var guidanceScale: Double = 7.0
+
+    // Music metadata
+    @State private var bpmEnabled = false
+    @State private var bpm: Double = 120
+    @State private var selectedKey: String?
+    @State private var selectedTimeSignature: String?
 
     // Cover mode state
     @State private var taskType: GenerationTaskType = .text2music
@@ -17,6 +35,14 @@ struct GenerationView: View {
     @State private var coverVocalsMode: CoverVocalsMode = .instrumental
     @State private var refAudioStrength: Double = 0.5
     @State private var isDropTargeted = false
+
+    // Extend mode state
+    @State private var selectedExtensionAmount: ExtensionAmount = .thirty
+    @State private var sourceTrack: Track?
+
+    // Runtime ETA estimation (adapts to machine speed)
+    @State private var generationStartedAt: Date?
+    @State private var smoothedRemainingSeconds: TimeInterval?
 
     var body: some View {
         ScrollView {
@@ -36,6 +62,24 @@ struct GenerationView: View {
             }
             .padding(.horizontal, Spacing.xl)
             .padding(.vertical, Spacing.lg)
+        }
+        .onAppear {
+            applyPrefillFromAppState()
+            if appState.isGenerating && generationStartedAt == nil {
+                handleGenerationStateChange(isGenerating: true)
+            }
+        }
+        .onChange(of: appState.prefillRequest) {
+            applyPrefillFromAppState()
+        }
+        .onChange(of: appState.isGenerating) {
+            handleGenerationStateChange(isGenerating: appState.isGenerating)
+        }
+        .onChange(of: appState.generationProgress) {
+            updateDynamicETA(progress: appState.generationProgress)
+        }
+        .onChange(of: taskType) {
+            refreshSuggestions()
         }
     }
 
@@ -61,6 +105,16 @@ struct GenerationView: View {
                     .frame(height: 1)
             }
 
+            // Track picker (extend mode only)
+            if taskType == .extend {
+                trackPickerSection
+                    .padding(Spacing.md)
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(height: 1)
+            }
+
             // Prompt area
             VStack(alignment: .leading, spacing: Spacing.sm) {
                 HStack(spacing: 6) {
@@ -68,7 +122,7 @@ struct GenerationView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(DesignSystem.Colors.accent)
 
-                    Text(taskType == .cover ? "Style Description" : "Music Description")
+                    Text(taskType == .cover ? "Style Description" : taskType == .extend ? "Extension Description" : "Music Description")
                         .font(Typography.captionMedium)
                         .foregroundStyle(DesignSystem.Colors.textSecondary)
 
@@ -107,7 +161,7 @@ struct GenerationView: View {
             // Controls footer: mode + duration + advanced toggle + create
             VStack(spacing: Spacing.md) {
                 HStack(spacing: Spacing.sm) {
-                    // Vocals mode pills (different for cover vs generate)
+                    // Vocals mode pills (different for cover vs generate vs extend)
                     if taskType == .cover {
                         coverVocalsPills
                     } else {
@@ -128,22 +182,34 @@ struct GenerationView: View {
 
                     Spacer()
 
-                    // Duration
-                    HStack(spacing: Spacing.xs) {
-                        ForEach(availableDurations, id: \.self) { duration in
-                            ZStack {
-                                DurationChip(
-                                    duration: duration,
-                                    isSelected: selectedDuration == duration,
-                                    action: {
-                                        if !duration.requiresPro || appState.isProUser {
-                                            selectedDuration = duration
-                                        }
-                                    }
+                    // Duration chips or extension amount chips
+                    if taskType == .extend {
+                        HStack(spacing: Spacing.xs) {
+                            ForEach(ExtensionAmount.allCases, id: \.self) { amount in
+                                ExtensionAmountChip(
+                                    amount: amount,
+                                    isSelected: selectedExtensionAmount == amount,
+                                    action: { selectedExtensionAmount = amount }
                                 )
+                            }
+                        }
+                    } else {
+                        HStack(spacing: Spacing.xs) {
+                            ForEach(availableDurations, id: \.self) { duration in
+                                ZStack {
+                                    DurationChip(
+                                        duration: duration,
+                                        isSelected: selectedDuration == duration,
+                                        action: {
+                                            if !duration.requiresPro || appState.isProUser {
+                                                selectedDuration = duration
+                                            }
+                                        }
+                                    )
 
-                                if duration.requiresPro && !appState.isProUser {
-                                    FeatureLockOverlay(feature: .extendedDuration)
+                                    if duration.requiresPro && !appState.isProUser {
+                                        FeatureLockOverlay(feature: .extendedDuration)
+                                    }
                                 }
                             }
                         }
@@ -176,7 +242,7 @@ struct GenerationView: View {
                 // Lyrics section
                 if taskType == .cover && coverVocalsMode == .newLyrics {
                     lyricsSection
-                } else if taskType == .text2music && !isInstrumental {
+                } else if (taskType == .text2music || taskType == .extend) && !isInstrumental {
                     lyricsSection
                 }
 
@@ -217,6 +283,27 @@ struct GenerationView: View {
                 action: {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         taskType = .cover
+                    }
+                }
+            )
+
+            InlinePill(
+                title: GenerationTaskType.extend.displayName,
+                icon: GenerationTaskType.extend.icon,
+                isSelected: taskType == .extend,
+                action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        taskType = .extend
+                        // Auto-populate source track from selected or last generated
+                        if sourceTrack == nil {
+                            if let selected = appState.selectedTrack {
+                                sourceTrack = selected
+                                sourceAudioURL = selected.audioURL
+                            } else if let last = appState.lastGeneratedTrack {
+                                sourceTrack = last
+                                sourceAudioURL = last.audioURL
+                            }
+                        }
                     }
                 }
             )
@@ -269,7 +356,7 @@ struct GenerationView: View {
                 )
             } else {
                 // Drop zone / browse
-                Button(action: browseAudio) {
+                Button(action: { browseAudio() }) {
                     VStack(spacing: Spacing.sm) {
                         Image(systemName: "arrow.down.doc")
                             .font(.system(size: 24))
@@ -279,7 +366,7 @@ struct GenerationView: View {
                             .font(Typography.captionMedium)
                             .foregroundStyle(DesignSystem.Colors.textSecondary)
 
-                        Text("WAV, MP3, M4A, FLAC")
+                        Text("WAV, MP3, M4A, FLAC, AAC, AIFF")
                             .font(Typography.caption)
                             .foregroundStyle(DesignSystem.Colors.textMuted)
                     }
@@ -300,6 +387,152 @@ struct GenerationView: View {
                 .buttonStyle(.plain)
                 .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                     handleAudioDrop(providers)
+                }
+            }
+        }
+    }
+
+    // MARK: - Track Picker (extend mode)
+
+    private var trackPickerSection: some View {
+        Group {
+            if let track = sourceTrack {
+                // Selected track display
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(DesignSystem.Colors.accent)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(track.displayTitle)
+                            .font(Typography.bodyMedium)
+                            .foregroundStyle(DesignSystem.Colors.textPrimary)
+                            .lineLimit(1)
+
+                        Text("\(track.duration.displayName) track")
+                            .font(Typography.caption)
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        sourceTrack = nil
+                        sourceAudioURL = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(Spacing.md)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(DesignSystem.Colors.accent.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .strokeBorder(DesignSystem.Colors.accent.opacity(0.2), lineWidth: 1)
+                )
+            } else if let url = sourceAudioURL {
+                // Selected external file display
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(DesignSystem.Colors.accent)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(url.lastPathComponent)
+                            .font(Typography.bodyMedium)
+                            .foregroundStyle(DesignSystem.Colors.textPrimary)
+                            .lineLimit(1)
+
+                        Text("File selected for extend")
+                            .font(Typography.caption)
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        sourceAudioURL = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(Spacing.md)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(DesignSystem.Colors.accent.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .strokeBorder(DesignSystem.Colors.accent.opacity(0.2), lineWidth: 1)
+                )
+            } else {
+                // Track selection chips
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    Text("Select a track to extend")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                    if appState.tracks.isEmpty {
+                        Text("No tracks yet — generate one first")
+                            .font(Typography.caption)
+                            .foregroundStyle(DesignSystem.Colors.textMuted)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, Spacing.lg)
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: Spacing.sm) {
+                                ForEach(appState.tracks.prefix(10)) { track in
+                                    Button {
+                                        sourceTrack = track
+                                        sourceAudioURL = track.audioURL
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "music.note")
+                                                .font(.system(size: 11))
+                                            Text(track.displayTitle)
+                                                .font(Typography.captionMedium)
+                                                .lineLimit(1)
+                                        }
+                                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(
+                                            Capsule()
+                                                .fill(Color.primary.opacity(0.06))
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+
+                    Button {
+                        browseAudio(for: .extend)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 11))
+                            Text("Browse audio file")
+                                .font(Typography.captionMedium)
+                        }
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule()
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -365,7 +598,7 @@ struct GenerationView: View {
 
             // Quality
             HStack {
-                Label("Quality", systemImage: "cpu")
+                Label("Quality", systemImage: "sparkles")
                     .font(Typography.captionMedium)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
 
@@ -389,13 +622,182 @@ struct GenerationView: View {
                         .font(Typography.captionMedium)
                         .foregroundStyle(DesignSystem.Colors.textSecondary)
 
-                    Slider(value: $refAudioStrength, in: 0.1...0.9, step: 0.1)
+                    Slider(value: $refAudioStrength, in: 0.0...1.0, step: 0.1)
                         .tint(DesignSystem.Colors.accent)
 
                     Text(String(format: "%.0f%%", refAudioStrength * 100))
                         .font(Typography.captionMedium)
                         .foregroundStyle(DesignSystem.Colors.textPrimary)
                         .frame(width: 36, alignment: .trailing)
+                }
+            }
+
+            // Seed
+            HStack(spacing: Spacing.sm) {
+                Label("Seed", systemImage: lockSeed ? "lock.fill" : "lock.open")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                TextField("Random", text: $seedText)
+                    .font(Typography.caption)
+                    .textFieldStyle(.plain)
+                    .frame(width: 100)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.primary.opacity(0.06))
+                    )
+                    .onChange(of: seedText) {
+                        // Strip non-numeric characters
+                        seedText = seedText.filter { $0.isNumber }
+                    }
+
+                Button {
+                    lockSeed.toggle()
+                    if lockSeed, seedText.isEmpty, let last = lastUsedSeed {
+                        seedText = String(last)
+                    }
+                } label: {
+                    Image(systemName: lockSeed ? "lock.fill" : "lock.open")
+                        .font(.system(size: 12))
+                        .foregroundStyle(lockSeed ? DesignSystem.Colors.accent : DesignSystem.Colors.textMuted)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(lockSeed ? DesignSystem.Colors.accent.opacity(0.12) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(lockSeed ? "Unlock seed (use random)" : "Lock seed for reproducible results")
+
+                Button {
+                    seedText = String(UInt64.random(in: 0...UInt64(Int32.max)))
+                } label: {
+                    Image(systemName: "dice")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignSystem.Colors.textMuted)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Generate random seed")
+
+                Spacer()
+            }
+
+            // Variations (batch size)
+            HStack {
+                Label("Variations", systemImage: "square.stack")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: Spacing.xs) {
+                    ForEach([1, 2, 4], id: \.self) { count in
+                        Button {
+                            batchSize = count
+                        } label: {
+                            Text("\(count)x")
+                                .font(Typography.captionMedium)
+                                .foregroundStyle(batchSize == count ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
+                                .padding(.horizontal, Spacing.sm)
+                                .padding(.vertical, Spacing.xs)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(batchSize == count
+                                            ? DesignSystem.Colors.accent.opacity(0.15)
+                                            : Color.primary.opacity(0.06))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            // Guidance Scale
+            HStack {
+                Label("Guidance", systemImage: "scope")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                Slider(value: $guidanceScale, in: 1.0...15.0, step: 0.5)
+                    .tint(DesignSystem.Colors.accent)
+
+                Text(String(format: "%.1f", guidanceScale))
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .frame(width: 32, alignment: .trailing)
+            }
+
+            // BPM
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        bpmEnabled.toggle()
+                    }
+                } label: {
+                    Label("BPM", systemImage: "metronome")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(bpmEnabled ? DesignSystem.Colors.textSecondary : DesignSystem.Colors.textMuted)
+                }
+                .buttonStyle(.plain)
+
+                if bpmEnabled {
+                    Slider(value: $bpm, in: 30...300, step: 1)
+                        .tint(DesignSystem.Colors.accent)
+
+                    Text("\(Int(bpm))")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textPrimary)
+                        .frame(width: 32, alignment: .trailing)
+                } else {
+                    Spacer()
+
+                    Text("Off")
+                        .font(Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textMuted)
+                }
+            }
+
+            // Key / Time Signature row
+            HStack(spacing: Spacing.md) {
+                // Key picker
+                HStack(spacing: Spacing.xs) {
+                    Label("Key", systemImage: "music.note")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                    Picker("", selection: $selectedKey) {
+                        Text("Any").tag(String?.none)
+                        ForEach(MusicKey.allKeys, id: \.self) { key in
+                            Text(key).tag(Optional(key))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                }
+
+                Spacer()
+
+                // Time signature picker
+                HStack(spacing: Spacing.xs) {
+                    Label("Time", systemImage: "clock.badge.checkmark")
+                        .font(Typography.captionMedium)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                    Picker("", selection: $selectedTimeSignature) {
+                        Text("Any").tag(String?.none)
+                        ForEach(MusicTimeSignature.all, id: \.self) { ts in
+                            Text(ts).tag(Optional(ts))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 70)
                 }
             }
         }
@@ -454,45 +856,150 @@ struct GenerationView: View {
 
     // MARK: - Generate Button
 
-    private var generateButton: some View {
-        Button(action: generate) {
-            HStack(spacing: Spacing.sm) {
-                if appState.isGenerating {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.8)
-                        .frame(width: 18, height: 18)
-                        .tint(.white)
-                } else if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.8)
-                        .frame(width: 18, height: 18)
-                        .tint(.white)
-                } else {
-                    Image(systemName: taskType == .cover ? "arrow.triangle.2.circlepath" : "waveform")
-                        .font(.system(size: 16, weight: .semibold))
-                }
+    private var modelState: ModelDownloadState {
+        appState.modelDownloadStates[appState.selectedModel] ?? .notDownloaded
+    }
 
-                Text(buttonTitle)
-                    .font(Typography.headline)
+    private var needsModelDownload: Bool {
+        !modelState.isDownloaded && !modelState.isDownloading
+    }
+
+    private var generateButton: some View {
+        VStack(spacing: Spacing.sm) {
+            if modelState.isDownloading {
+                modelDownloadProgressBanner
+            } else if let errorMsg = modelState.errorMessage {
+                modelErrorBanner(errorMsg)
+            } else if needsModelDownload {
+                modelDownloadBanner
             }
-            .foregroundStyle(canGenerate ? .white : .secondary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
-            .background(
-                RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                    .fill(canGenerate ? AnyShapeStyle(DesignSystem.Colors.accent) : AnyShapeStyle(Color.primary.opacity(0.08)))
-            )
+
+            Button(action: generateButtonAction) {
+                HStack(spacing: Spacing.sm) {
+                    if appState.isGenerating {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.8)
+                            .frame(width: 18, height: 18)
+                            .tint(.white)
+                    } else if modelState.isDownloading {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.8)
+                            .frame(width: 18, height: 18)
+                            .tint(.white)
+                    } else if needsModelDownload {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 16, weight: .semibold))
+                    } else {
+                        Image(systemName: taskType == .cover ? "arrow.triangle.2.circlepath" : taskType == .extend ? "arrow.forward.to.line" : "waveform")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+
+                    Text(buttonTitle)
+                        .font(Typography.headline)
+                }
+                .foregroundStyle(canGenerateOrDownload ? .white : .secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                        .fill(canGenerateOrDownload
+                              ? AnyShapeStyle(DesignSystem.Colors.accent)
+                              : AnyShapeStyle(Color.primary.opacity(0.08)))
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canGenerateOrDownload)
         }
-        .buttonStyle(.plain)
-        .disabled(!canGenerate)
+    }
+
+    private var modelDownloadBanner: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 13))
+                .foregroundStyle(.orange)
+
+            Text("Required model files are missing. Download once, then click Create.")
+                .font(Typography.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+        }
+    }
+
+    private var modelDownloadProgressBanner: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Spacing.sm) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .scaleEffect(0.6)
+                    .frame(width: 13, height: 13)
+
+                Text("Downloading…")
+                    .font(Typography.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("\(Int((modelState.progress ?? 0) * 100))%")
+                    .font(Typography.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.primary.opacity(0.08))
+
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(DesignSystem.Colors.accent)
+                        .frame(width: geometry.size.width * (modelState.progress ?? 0))
+                        .animation(.linear(duration: 0.3), value: modelState.progress)
+                }
+            }
+            .frame(height: 4)
+        }
+    }
+
+    private func modelErrorBanner(_ message: String) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 13))
+                .foregroundStyle(.red)
+
+            Text("Download failed: \(message)")
+                .font(Typography.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Spacer()
+
+            Button("Retry") {
+                appState.downloadModel(appState.selectedModel)
+            }
+            .font(Typography.caption)
+            .foregroundStyle(DesignSystem.Colors.accent)
+        }
     }
 
     // MARK: - Progress Section
 
     private var progressSection: some View {
         VStack(spacing: Spacing.md) {
+            HStack {
+                Text(progressTitle)
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                Spacer()
+
+                Text("\(Int(appState.generationProgress * 100))%")
+                    .font(Typography.captionMedium)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .monospacedDigit()
+            }
+
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
@@ -508,23 +1015,7 @@ struct GenerationView: View {
             .frame(height: 6)
 
             HStack {
-                Text(appState.generationStatus)
-                    .font(Typography.caption)
-                    .foregroundStyle(DesignSystem.Colors.textSecondary)
-
-                Spacer()
-
-                Text("\(Int(appState.generationProgress * 100))%")
-                    .font(Typography.captionMedium)
-                    .foregroundStyle(DesignSystem.Colors.textPrimary)
-            }
-
-            HStack {
-                Image(systemName: "clock")
-                    .font(.system(size: 11))
-                    .foregroundStyle(DesignSystem.Colors.textMuted)
-
-                Text(estimatedTimeText)
+                Label(remainingTimeLine, systemImage: "clock")
                     .font(Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textMuted)
 
@@ -558,59 +1049,232 @@ struct GenerationView: View {
     private var suggestionsSection: some View {
         SuggestionGrid(
             suggestions: suggestions,
-            onSelect: { suggestion in
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    prompt = suggestion.subtitle
-                    selectedGenreCard = nil
-                }
+            onSelect: { suggestion, mode in
+                applySuggestion(suggestion, mode: mode)
             },
             onRefresh: {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    suggestions = SuggestionData.randomSet()
+                    refreshSuggestions()
                 }
             }
         )
     }
 
-    private var estimatedTimeText: String {
-        guard let request = appState.currentRequest else {
-            return "Estimating..."
+    private func refreshSuggestions() {
+        suggestions = SuggestionData.randomSet(for: taskType)
+    }
+
+    private func applySuggestion(_ suggestion: SuggestionData, mode: SuggestionApplyMode) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            prompt = suggestion.prompt
+            selectedGenreCard = nil
         }
 
-        let estimate: String
-        switch request.duration {
-        case .short:     estimate = "1-2 minutes"
-        case .medium:    estimate = "3-6 minutes"
-        case .long:      estimate = "6-12 minutes"
-        case .extended:  estimate = "12-20 minutes"
-        case .maximum:   estimate = "20-40 minutes"
-        }
+        guard mode == .promptAndLyrics else { return }
+        guard let template = suggestion.lyricsTemplate else { return }
 
-        return "Estimated time: \(estimate)"
+        withAnimation(.easeInOut(duration: 0.2)) {
+            lyrics = template
+            if taskType == .cover {
+                coverVocalsMode = .newLyrics
+            } else {
+                isInstrumental = false
+            }
+        }
     }
 
     // MARK: - Helpers
 
+    private var progressTitle: String {
+        let progress = appState.generationProgress
+        if progress < 0.12 {
+            return "Preparing"
+        }
+        if progress >= 0.88 {
+            return "Finalizing audio"
+        }
+
+        switch appState.currentRequest?.taskType ?? .text2music {
+        case .text2music:
+            return "Generating audio"
+        case .cover:
+            return "Creating remix"
+        case .extend:
+            return "Extending track"
+        }
+    }
+
+    private var remainingTimeLine: String {
+        guard appState.generationProgress < 0.99 else { return "Almost done" }
+        guard let remaining = smoothedRemainingSeconds else {
+            return "Estimating for this Mac..."
+        }
+        return "About \(formattedDuration(remaining)) left"
+    }
+
+    private func formattedDuration(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        if total < 60 { return "< 1 min" }
+
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+        return "\(minutes)m"
+    }
+
+    private func handleGenerationStateChange(isGenerating: Bool) {
+        if isGenerating {
+            generationStartedAt = Date()
+            smoothedRemainingSeconds = nil
+        } else {
+            generationStartedAt = nil
+            smoothedRemainingSeconds = nil
+        }
+    }
+
+    private func updateDynamicETA(progress: Double) {
+        guard appState.isGenerating else { return }
+        guard let startedAt = generationStartedAt else { return }
+
+        let normalized = min(max(progress, 0), 1)
+        if normalized >= 0.99 {
+            smoothedRemainingSeconds = 0
+            return
+        }
+
+        guard normalized > 0.03 else { return }
+
+        let elapsed = Date().timeIntervalSince(startedAt)
+        guard elapsed >= 4 else { return }
+
+        let rawRemaining = max(0, (elapsed / normalized) - elapsed)
+        let clamped = min(rawRemaining, 90 * 60)
+        if let current = smoothedRemainingSeconds {
+            smoothedRemainingSeconds = current * 0.7 + clamped * 0.3
+        } else {
+            smoothedRemainingSeconds = clamped
+        }
+    }
+
+    private func applyPrefillFromAppState() {
+        guard let req = appState.prefillRequest else { return }
+
+        prompt = req.prompt
+        selectedDuration = req.duration
+        selectedQualityMode = req.qualityMode
+        guidanceScale = req.guidanceScale
+        taskType = req.taskType
+        sourceTrack = req.sourceTrack
+        sourceAudioURL = req.sourceAudioURL
+        refAudioStrength = req.refAudioStrength
+        batchSize = req.batchSize
+        selectedKey = req.musicKey
+        selectedTimeSignature = req.timeSignature
+        showAdvanced = true
+
+        if appState.isModelAccessible(req.model) {
+            appState.selectedModel = req.model
+        }
+
+        if let seed = req.seed {
+            seedText = String(seed)
+            lockSeed = true
+        } else {
+            seedText = ""
+            lockSeed = false
+        }
+
+        if let bpmValue = req.bpm {
+            bpmEnabled = true
+            bpm = Double(bpmValue)
+        } else {
+            bpmEnabled = false
+        }
+
+        switch req.taskType {
+        case .cover:
+            switch req.lyrics {
+            case "":
+                coverVocalsMode = .keep
+                isInstrumental = false
+                lyrics = ""
+            case nil, "[inst]":
+                coverVocalsMode = .instrumental
+                isInstrumental = true
+                lyrics = ""
+            case let text?:
+                coverVocalsMode = .newLyrics
+                isInstrumental = false
+                lyrics = text
+            }
+        case .text2music, .extend:
+            coverVocalsMode = .instrumental
+            if let text = req.lyrics, !text.isEmpty, text != "[inst]" {
+                isInstrumental = false
+                lyrics = text
+            } else {
+                isInstrumental = true
+                lyrics = ""
+            }
+        }
+
+        appState.prefillRequest = nil
+    }
+
     private var canGenerate: Bool {
         let hasPrompt = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasSource = taskType == .text2music || sourceAudioURL != nil
-        return hasPrompt && hasSource && appState.canGenerate
+        let hasExtendSource = taskType != .extend || extendSourceDuration != nil
+        return hasPrompt && hasSource && hasExtendSource && appState.canGenerate
+    }
+
+    /// Whether the button should be interactive — either for generating or downloading.
+    private var canGenerateOrDownload: Bool {
+        if canGenerate { return true }
+        // Allow model download without a prompt — download is a prerequisite that takes time
+        if needsModelDownload && appState.backendConnected && !appState.isGenerating {
+            return true
+        }
+        return false
     }
 
     private var buttonTitle: String {
         if appState.isGenerating {
             return "Generating..."
         }
-        if case .downloading = appState.modelDownloadStates[appState.selectedModel] {
-            return "Downloading Model..."
+        if modelState.isDownloading {
+            let progress = modelState.progress ?? 0
+            return "Downloading… \(Int(progress * 100))%"
         }
-        return taskType == .cover ? "Create Cover" : "Create"
+        if needsModelDownload {
+            return "Download Model"
+        }
+        switch taskType {
+        case .cover: return "Create Cover"
+        case .extend: return "Extend Track"
+        case .text2music: return "Create"
+        }
+    }
+
+    private func generateButtonAction() {
+        if needsModelDownload {
+            appState.downloadModel(appState.selectedModel)
+        } else {
+            generate()
+        }
     }
 
     private var promptPlaceholder: String {
-        taskType == .cover
-            ? "Describe the style for your cover..."
-            : "Describe the music you want to create..."
+        switch taskType {
+        case .cover:
+            return "Describe the style for your cover..."
+        case .extend:
+            return "Describe how the extension should sound..."
+        case .text2music:
+            return "Describe the music you want to create..."
+        }
     }
 
     private func generate() {
@@ -619,9 +1283,9 @@ struct GenerationView: View {
         if taskType == .cover {
             switch coverVocalsMode {
             case .keep:
-                effectiveLyrics = nil
+                effectiveLyrics = ""  // Empty string preserves source vocals
             case .instrumental:
-                effectiveLyrics = nil
+                effectiveLyrics = "[inst]"  // Explicitly request instrumental
             case .newLyrics:
                 effectiveLyrics = lyrics.isEmpty ? nil : lyrics
             }
@@ -629,30 +1293,76 @@ struct GenerationView: View {
             effectiveLyrics = isInstrumental ? nil : (lyrics.isEmpty ? nil : lyrics)
         }
 
+        // Calculate repaint parameters for extend mode
+        var repaintingStart: Double?
+        var repaintingEnd: Double?
+        if taskType == .extend {
+            guard let sourceDuration = extendSourceDuration else {
+                appState.generationStatus = "Error: Could not read source audio duration."
+                return
+            }
+            repaintingStart = max(0, sourceDuration - 5.0)  // 5s overlap for seamless transition
+            repaintingEnd = sourceDuration + Double(selectedExtensionAmount.seconds)
+        }
+
+        // Parse seed from text field
+        let seed: UInt64? = seedText.isEmpty ? nil : UInt64(seedText)
+        if let seed { lastUsedSeed = seed }
+
         let request = GenerationRequest(
             prompt: prompt,
             duration: selectedDuration,
             model: appState.selectedModel,
+            seed: seed,
             lyrics: effectiveLyrics,
             qualityMode: selectedQualityMode,
+            guidanceScale: guidanceScale,
             taskType: taskType,
             sourceAudioURL: sourceAudioURL,
-            refAudioStrength: refAudioStrength
+            refAudioStrength: refAudioStrength,
+            repaintingStart: repaintingStart,
+            repaintingEnd: repaintingEnd,
+            sourceTrack: sourceTrack,
+            batchSize: batchSize,
+            bpm: bpmEnabled ? Int(bpm) : nil,
+            musicKey: selectedKey,
+            timeSignature: selectedTimeSignature
         )
         appState.startGeneration(request: request)
+
+        // Clear seed if not locked
+        if !lockSeed {
+            seedText = ""
+        }
     }
 
     // MARK: - Audio File Handling
 
-    private func browseAudio() {
+    private var extendSourceDuration: Double? {
+        if let track = sourceTrack {
+            return track.durationSeconds
+        }
+
+        guard let sourceAudioURL else { return nil }
+        guard let player = try? AVAudioPlayer(contentsOf: sourceAudioURL) else { return nil }
+        let seconds = player.duration
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        return seconds
+    }
+
+    private func browseAudio(for taskOverride: GenerationTaskType? = nil) {
+        let effectiveTask = taskOverride ?? taskType
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
+        panel.allowedContentTypes = [.audio]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Select an audio file to use as cover source"
+        panel.message = effectiveTask == .extend
+            ? "Select an audio file to extend"
+            : "Select an audio file to use as cover source"
 
         if panel.runModal() == .OK {
             sourceAudioURL = panel.url
+            sourceTrack = nil
         }
     }
 
@@ -665,6 +1375,7 @@ struct GenerationView: View {
             if audioExtensions.contains(url.pathExtension.lowercased()) {
                 DispatchQueue.main.async {
                     self.sourceAudioURL = url
+                    self.sourceTrack = nil
                 }
             }
         }
@@ -763,6 +1474,37 @@ struct DurationChip: View {
     var body: some View {
         Button(action: action) {
             Text(duration.displayName)
+                .font(Typography.captionMedium)
+                .foregroundStyle(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
+                .padding(.horizontal, Spacing.sm)
+                .padding(.vertical, Spacing.xs)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? DesignSystem.Colors.accent.opacity(0.15) : Color.primary.opacity(0.06))
+                )
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.03 : 1)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+// MARK: - Extension Amount Chip
+
+struct ExtensionAmountChip: View {
+    let amount: ExtensionAmount
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(amount.displayName)
                 .font(Typography.captionMedium)
                 .foregroundStyle(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
                 .padding(.horizontal, Spacing.sm)

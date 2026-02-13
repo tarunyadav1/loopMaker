@@ -3,8 +3,22 @@ import SwiftUI
 /// Global application state
 @MainActor
 public final class AppState: ObservableObject {
+    enum MainSidebarTab: String, CaseIterable, Identifiable {
+        case home = "Home"
+        case library = "Library"
+        case settings = "Settings"
+
+        var id: String { rawValue }
+    }
+
+    enum HomeContentTab: String, CaseIterable {
+        case generate = "Generate"
+        case favorites = "Favorites"
+    }
+
     // MARK: - Navigation State
-    @Published var selectedSidebarItem: SidebarItem = .generate
+    @Published var selectedMainSidebarTab: MainSidebarTab = .home
+    @Published var selectedHomeContentTab: HomeContentTab = .generate
     @Published var showNewGeneration = false
     @Published var showSettings = false
     @Published var showExport = false
@@ -30,10 +44,11 @@ public final class AppState: ObservableObject {
     @Published var selectedTrack: Track?
     @Published var lastGeneratedTrack: Track?
     @Published var searchQuery = ""
+    @Published var prefillRequest: GenerationRequest?
 
     // MARK: - Services
     private var generationTask: Task<Void, Never>?
-    private let pythonBackend = PythonBackendService()
+    private(set) var pythonBackend = PythonBackendService()
     let audioPlayer = AudioPlayer()
     let licenseService = LicenseService.shared
 
@@ -82,7 +97,8 @@ public final class AppState: ObservableObject {
 
         switch backendManager.state {
         case .running:
-            // Backend is ready, check model status
+            // Recreate PythonBackendService with the port the manager chose
+            reconnectBackendService()
             backendConnected = true
             await checkModelStatus()
 
@@ -96,6 +112,12 @@ public final class AppState: ObservableObject {
             // Still setting up - this shouldn't happen as ensureBackendRunning awaits
             break
         }
+    }
+
+    /// Recreate PythonBackendService pointing at the manager's current port.
+    private func reconnectBackendService() {
+        let url = URL(string: "http://127.0.0.1:\(backendManager.port)")!
+        pythonBackend = PythonBackendService(baseURL: url)
     }
 
     /// Check model download status from backend.
@@ -133,8 +155,39 @@ public final class AppState: ObservableObject {
 
         if case .running = backendManager.state {
             showSetup = false
+            reconnectBackendService()
             backendConnected = true
             await checkModelStatus()
+        }
+    }
+
+    /// Restart the backend process (no venv rebuild) and reconnect the service.
+    func restartBackend() async {
+        backendConnected = false
+        backendError = nil
+        await backendManager.restartBackend()
+
+        if case .running = backendManager.state {
+            reconnectBackendService()
+            backendConnected = true
+            await checkModelStatus()
+        } else {
+            backendError = backendManager.state.userMessage
+        }
+    }
+
+    /// Wipe the venv and re-run full setup from scratch.
+    func cleanInstallBackend() async {
+        backendConnected = false
+        backendError = nil
+        await backendManager.cleanInstall()
+
+        if case .running = backendManager.state {
+            reconnectBackendService()
+            backendConnected = true
+            await checkModelStatus()
+        } else {
+            backendError = backendManager.state.userMessage
         }
     }
 
@@ -173,7 +226,7 @@ public final class AppState: ObservableObject {
 
         generationTask = Task {
             do {
-                let track = try await pythonBackend.generate(request: request) { progress, status in
+                let generatedTracks = try await pythonBackend.generate(request: request) { progress, status in
                     Task { @MainActor in
                         self.generationProgress = progress
                         self.generationStatus = status
@@ -181,12 +234,18 @@ public final class AppState: ObservableObject {
                 }
 
                 generationProgress = 1
-                tracks.insert(track, at: 0)
-                selectedTrack = track
-                lastGeneratedTrack = track
+                // Insert all variations (most recent first)
+                for track in generatedTracks.reversed() {
+                    tracks.insert(track, at: 0)
+                }
+                if let first = generatedTracks.first {
+                    selectedTrack = first
+                    lastGeneratedTrack = first
+                    playTrack(first)
+                }
                 persistTracksToDisk()
-                playTrack(track)
-                generationStatus = "Complete!"
+                let count = generatedTracks.count
+                generationStatus = count > 1 ? "Complete! \(count) variations generated" : "Complete!"
             } catch {
                 generationStatus = "Error: \(error.localizedDescription)"
             }
@@ -239,6 +298,25 @@ public final class AppState: ObservableObject {
         persistTracksToDisk()
     }
 
+    func deleteMultipleTracks(_ ids: Set<UUID>) {
+        for id in ids {
+            if let track = tracks.first(where: { $0.id == id }) {
+                if audioPlayer.isCurrentTrack(track.audioURL) {
+                    stopPlayback()
+                }
+                try? FileManager.default.removeItem(at: track.audioURL)
+            }
+        }
+        tracks.removeAll { ids.contains($0.id) }
+        if let selected = selectedTrack, ids.contains(selected.id) {
+            selectedTrack = nil
+        }
+        if let last = lastGeneratedTrack, ids.contains(last.id) {
+            lastGeneratedTrack = nil
+        }
+        persistTracksToDisk()
+    }
+
     func clearAllTracks() {
         stopPlayback()
         for track in tracks {
@@ -248,6 +326,21 @@ public final class AppState: ObservableObject {
         selectedTrack = nil
         lastGeneratedTrack = nil
         persistTracksToDisk()
+    }
+
+    func renameTrack(_ track: Track, newTitle: String) {
+        if let index = tracks.firstIndex(where: { $0.id == track.id }) {
+            tracks[index].title = newTitle.isEmpty ? nil : newTitle
+
+            let updatedTrack = tracks[index]
+            if selectedTrack?.id == updatedTrack.id {
+                selectedTrack = updatedTrack
+            }
+            if lastGeneratedTrack?.id == updatedTrack.id {
+                lastGeneratedTrack = updatedTrack
+            }
+            persistTracksToDisk()
+        }
     }
 
     func toggleFavorite(_ track: Track) {
@@ -269,6 +362,32 @@ public final class AppState: ObservableObject {
     }
 
     // MARK: - Playback Controls
+
+    var canPlayPrevious: Bool {
+        guard let current = selectedTrack ?? lastGeneratedTrack else { return false }
+        guard let index = tracks.firstIndex(where: { $0.id == current.id }) else { return false }
+        return index < tracks.count - 1
+    }
+
+    var canPlayNext: Bool {
+        guard let current = selectedTrack ?? lastGeneratedTrack else { return false }
+        guard let index = tracks.firstIndex(where: { $0.id == current.id }) else { return false }
+        return index > 0
+    }
+
+    func playPreviousTrack() {
+        guard let current = selectedTrack ?? lastGeneratedTrack,
+              let index = tracks.firstIndex(where: { $0.id == current.id }),
+              index < tracks.count - 1 else { return }
+        playTrack(tracks[index + 1])
+    }
+
+    func playNextTrack() {
+        guard let current = selectedTrack ?? lastGeneratedTrack,
+              let index = tracks.firstIndex(where: { $0.id == current.id }),
+              index > 0 else { return }
+        playTrack(tracks[index - 1])
+    }
 
     func playTrack(_ track: Track) {
         selectedTrack = track
@@ -292,6 +411,14 @@ public final class AppState: ObservableObject {
 
     func seekPlayback(to position: Double) {
         audioPlayer.seek(to: position)
+    }
+
+    func setVolume(_ volume: Float) {
+        audioPlayer.setVolume(volume)
+    }
+
+    func cycleRepeatMode() {
+        audioPlayer.cycleRepeatMode()
     }
 
     // MARK: - Model State Persistence

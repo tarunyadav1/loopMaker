@@ -25,11 +25,12 @@ public final class PythonBackendService: ObservableObject {
 
     // MARK: - Generation
 
-    /// Generate music using Python backend via WebSocket for real-time progress
+    /// Generate music using Python backend via WebSocket for real-time progress.
+    /// Returns an array of tracks (one per batch variation).
     public func generate(
         request: GenerationRequest,
         progressHandler: @escaping (Double, String) -> Void
-    ) async throws -> Track {
+    ) async throws -> [Track] {
         // Build WebSocket URL from base HTTP URL
         let wsScheme = baseURL.scheme == "https" ? "wss" : "ws"
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
@@ -62,11 +63,36 @@ public final class PythonBackendService: ObservableObject {
         body["lyrics"] = request.effectiveLyrics
         body["quality_mode"] = request.qualityMode.rawValue
         body["guidance_scale"] = request.guidanceScale
-        body["task_type"] = request.taskType.rawValue
+        body["task_type"] = request.taskType.backendTaskType
+
+        if request.batchSize > 1 {
+            body["batch_size"] = request.batchSize
+        }
+
+        if let bpm = request.bpm {
+            body["bpm"] = bpm
+        }
+        if let musicKey = request.musicKey {
+            body["music_key"] = musicKey
+        }
+        if let timeSignature = request.timeSignature {
+            body["time_signature"] = timeSignature
+        }
 
         if request.taskType == .cover, let sourceURL = request.sourceAudioURL {
             body["source_audio_path"] = sourceURL.path
             body["ref_audio_strength"] = request.refAudioStrength
+        }
+
+        if request.taskType == .extend, let sourceURL = request.sourceAudioURL {
+            body["source_audio_path"] = sourceURL.path
+            if let start = request.repaintingStart {
+                body["repainting_start"] = start
+            }
+            if let end = request.repaintingEnd {
+                body["repainting_end"] = end
+                body["duration"] = Int(end)
+            }
         }
 
         let requestData = try JSONSerialization.data(withJSONObject: body)
@@ -98,26 +124,64 @@ public final class PythonBackendService: ObservableObject {
                 break
 
             case "complete":
-                guard let audioPath = json["audio_path"] as? String else {
+                // Support batch results (audio_paths array) with fallback to single audio_path
+                let audioPaths: [String]
+                let durations: [Double?]
+
+                if let paths = json["audio_paths"] as? [String] {
+                    audioPaths = paths
+                    durations = (json["durations"] as? [Double])?.map { Optional($0) }
+                        ?? Array(repeating: json["duration"] as? Double, count: paths.count)
+                } else if let singlePath = json["audio_path"] as? String {
+                    audioPaths = [singlePath]
+                    durations = [json["duration"] as? Double]
+                } else {
                     throw PythonBackendError.invalidResponse
                 }
 
-                let fileURL = URL(fileURLWithPath: audioPath)
-                guard FileManager.default.fileExists(atPath: fileURL.path) else {
-                    throw PythonBackendError.generationFailed("Audio file not found at \(audioPath)")
+                // Parse seed from response (backend may return the actual seed used)
+                let responseSeed: UInt64?
+                if let seedVal = json["seed"] as? Int {
+                    responseSeed = UInt64(seedVal)
+                } else if let seedVal = json["seed"] as? UInt64 {
+                    responseSeed = seedVal
+                } else {
+                    responseSeed = nil
                 }
+                let effectiveSeed = responseSeed ?? request.seed
 
                 progressHandler(1.0, "Complete!")
 
-                return Track(
-                    prompt: request.prompt,
-                    duration: request.duration,
-                    model: request.model,
-                    audioURL: fileURL,
-                    lyrics: request.lyrics,
-                    taskType: request.taskType == .text2music ? nil : request.taskType.rawValue,
-                    sourceAudioName: request.sourceAudioURL?.lastPathComponent
-                )
+                var tracks: [Track] = []
+                for (index, audioPath) in audioPaths.enumerated() {
+                    let fileURL = URL(fileURLWithPath: audioPath)
+                    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                        throw PythonBackendError.generationFailed("Audio file not found at \(audioPath)")
+                    }
+
+                    let variationSuffix = audioPaths.count > 1 ? " (v\(index + 1))" : ""
+                    let track = Track(
+                        prompt: request.prompt,
+                        duration: request.duration,
+                        model: request.model,
+                        audioURL: fileURL,
+                        title: audioPaths.count > 1 ? "\(request.prompt.prefix(25))\(variationSuffix)" : nil,
+                        lyrics: request.lyrics,
+                        taskType: request.taskType == .text2music ? nil : request.taskType.rawValue,
+                        sourceAudioName: request.sourceAudioURL?.lastPathComponent,
+                        sourceTrackID: request.sourceTrack?.id,
+                        actualDurationSeconds: durations[index],
+                        seed: effectiveSeed,
+                        bpm: request.bpm,
+                        musicKey: request.musicKey,
+                        timeSignature: request.timeSignature,
+                        guidanceScale: request.guidanceScale,
+                        qualityMode: request.qualityMode.rawValue
+                    )
+                    tracks.append(track)
+                }
+
+                return tracks
 
             case "error":
                 let detail = json["detail"] as? String ?? "Unknown error"

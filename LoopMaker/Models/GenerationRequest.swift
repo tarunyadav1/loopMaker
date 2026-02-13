@@ -1,10 +1,10 @@
 import Foundation
 
-/// Quality mode for ACE-Step v1.5 generation
+/// Quality mode for music generation
 public enum QualityMode: String, CaseIterable, Codable, Sendable {
-    case draft    // 4 inference steps - quick preview
-    case fast     // 8 inference steps - turbo (default, recommended)
-    case quality  // 50 inference steps - highest quality
+    case draft
+    case fast
+    case quality
 
     public var displayName: String {
         switch self {
@@ -24,7 +24,28 @@ public enum QualityMode: String, CaseIterable, Codable, Sendable {
 }
 
 /// Request parameters for music generation
-public struct GenerationRequest: Sendable {
+public struct GenerationRequest: Sendable, Equatable {
+    public static func == (lhs: GenerationRequest, rhs: GenerationRequest) -> Bool {
+        lhs.prompt == rhs.prompt &&
+        lhs.duration == rhs.duration &&
+        lhs.model == rhs.model &&
+        lhs.genre == rhs.genre &&
+        lhs.seed == rhs.seed &&
+        lhs.lyrics == rhs.lyrics &&
+        lhs.qualityMode == rhs.qualityMode &&
+        lhs.guidanceScale == rhs.guidanceScale &&
+        lhs.taskType == rhs.taskType &&
+        lhs.sourceAudioURL == rhs.sourceAudioURL &&
+        lhs.refAudioStrength == rhs.refAudioStrength &&
+        lhs.repaintingStart == rhs.repaintingStart &&
+        lhs.repaintingEnd == rhs.repaintingEnd &&
+        lhs.sourceTrack == rhs.sourceTrack &&
+        lhs.batchSize == rhs.batchSize &&
+        lhs.bpm == rhs.bpm &&
+        lhs.musicKey == rhs.musicKey &&
+        lhs.timeSignature == rhs.timeSignature
+    }
+
     public let prompt: String
     public let duration: TrackDuration
     public let model: ModelType
@@ -36,6 +57,13 @@ public struct GenerationRequest: Sendable {
     public let taskType: GenerationTaskType
     public let sourceAudioURL: URL?
     public let refAudioStrength: Double
+    public let repaintingStart: Double?
+    public let repaintingEnd: Double?
+    public let sourceTrack: Track?
+    public let batchSize: Int
+    public let bpm: Int?
+    public let musicKey: String?
+    public let timeSignature: String?
 
     public init(
         prompt: String,
@@ -48,7 +76,14 @@ public struct GenerationRequest: Sendable {
         guidanceScale: Double = 7.0,
         taskType: GenerationTaskType = .text2music,
         sourceAudioURL: URL? = nil,
-        refAudioStrength: Double = 0.5
+        refAudioStrength: Double = 0.5,
+        repaintingStart: Double? = nil,
+        repaintingEnd: Double? = nil,
+        sourceTrack: Track? = nil,
+        batchSize: Int = 1,
+        bpm: Int? = nil,
+        musicKey: String? = nil,
+        timeSignature: String? = nil
     ) {
         self.prompt = prompt
         self.duration = duration
@@ -61,6 +96,13 @@ public struct GenerationRequest: Sendable {
         self.taskType = taskType
         self.sourceAudioURL = sourceAudioURL
         self.refAudioStrength = refAudioStrength
+        self.repaintingStart = repaintingStart
+        self.repaintingEnd = repaintingEnd
+        self.sourceTrack = sourceTrack
+        self.batchSize = batchSize
+        self.bpm = bpm
+        self.musicKey = musicKey
+        self.timeSignature = timeSignature
     }
 
     /// Full prompt (genre text is now included directly in the prompt field)
@@ -72,4 +114,29 @@ public struct GenerationRequest: Sendable {
     public var effectiveLyrics: String {
         lyrics ?? "[inst]"
     }
+}
+
+// MARK: - Music Metadata Options
+
+/// Available musical keys for generation
+public enum MusicKey {
+    static let allKeys: [String] = [
+        "C major", "C minor",
+        "C# major", "C# minor",
+        "D major", "D minor",
+        "Eb major", "Eb minor",
+        "E major", "E minor",
+        "F major", "F minor",
+        "F# major", "F# minor",
+        "G major", "G minor",
+        "Ab major", "Ab minor",
+        "A major", "A minor",
+        "Bb major", "Bb minor",
+        "B major", "B minor",
+    ]
+}
+
+/// Available time signatures for generation
+public enum MusicTimeSignature {
+    static let all: [String] = ["2/4", "3/4", "4/4", "5/4", "6/8", "7/8"]
 }

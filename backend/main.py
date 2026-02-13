@@ -23,7 +23,7 @@ import numpy as np
 import torch
 
 # Note: PYTORCH_ENABLE_MPS_FALLBACK=1 is set above to handle PyTorch MPS
-# Metal shader bugs. The pipeline uses cpu_offload=True + float32 for stability.
+# Metal shader bugs. The handler uses offload_to_cpu=True for stability.
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -86,13 +86,9 @@ MODEL_REGISTRY = {
 
 # MARK: - Model Caches
 
-# ACE-Step v1.5 pipeline (replaces separate handler architecture)
-_pipeline = None
-_pipeline_initialized = False
-
-# Configuration
-MODEL_CACHE_DIR = Path.home() / ".cache" / "loopmaker" / "models"
-MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# ACE-Step v1.5 handler (singleton)
+_handler = None
+_handler_initialized = False
 
 # Shared output directory (must match Swift's track storage path)
 TRACKS_DIR = Path.home() / "Library" / "Application Support" / "LoopMaker" / "tracks"
@@ -109,9 +105,16 @@ class GenerationRequest(BaseModel):
     lyrics: Optional[str] = None
     quality_mode: str = "fast"  # "draft" (4 steps), "fast" (8 steps), or "quality" (50 steps)
     guidance_scale: float = 7.0  # v1.5 default (was 15.0 in v1)
-    task_type: str = "text2music"  # "text2music" or "cover"
-    source_audio_path: Optional[str] = None  # absolute path for cover mode
+    task_type: str = "text2music"  # "text2music", "cover", or "repaint"
+    source_audio_path: Optional[str] = None  # absolute path for cover/repaint mode
     ref_audio_strength: float = 0.5  # 0.0-1.0, how much reference audio influences output
+    repainting_start: Optional[float] = None  # repaint mode: start of repaint region (seconds)
+    repainting_end: Optional[float] = None  # repaint mode: end of repaint region (seconds)
+    batch_size: int = 1  # number of variations to generate (1-8)
+    # Music metadata — prepended to caption for ACE-Step conditioning
+    bpm: Optional[int] = None  # beats per minute (30-300)
+    music_key: Optional[str] = None  # e.g. "C major", "A minor"
+    time_signature: Optional[str] = None  # e.g. "4/4", "3/4", "6/8"
 
 
 class GenerationResponse(BaseModel):
@@ -137,96 +140,58 @@ def get_device() -> str:
 
 # MARK: - Model Loaders
 
-ACE_STEP_REPO_ID = "ACE-Step/ACE-Step-v1-3.5B"
-ACE_STEP_CACHE_DIR = Path.home() / ".cache" / "ace-step" / "checkpoints"
+def _load_handler():
+    """Load ACE-Step v1.5 handler with Mac-specific configuration.
 
-
-def _resolve_checkpoint_dir() -> str:
-    """Resolve the ACE-Step checkpoint directory.
-
-    First tries local cache (instant), then falls back to snapshot_download
-    which will download weights if missing (~8GB).
+    Uses AceStepHandler which manages DiT + LM internally.
+    Downloads model weights via ensure_main_model() if missing.
     """
-    from huggingface_hub import snapshot_download
+    global _handler, _handler_initialized
 
-    ACE_STEP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Fast path: try local-only resolution first (avoids HF API call)
-    try:
-        path = snapshot_download(
-            ACE_STEP_REPO_ID,
-            cache_dir=str(ACE_STEP_CACHE_DIR),
-            local_files_only=True,
-        )
-        # Verify required subdirectories exist
-        required = ["music_dcae_f8c8", "music_vocoder", "ace_step_transformer", "umt5-base"]
-        if all(os.path.exists(os.path.join(path, d)) for d in required):
-            print(f"ACE-Step checkpoint resolved from cache: {path}")
-            return path
-    except Exception:
-        pass
-
-    # Slow path: download from HuggingFace
-    print(f"Downloading ACE-Step model from HuggingFace ({ACE_STEP_REPO_ID})...")
-    print("This may take 5-30 minutes depending on your connection (~8GB)...")
-    path = snapshot_download(
-        ACE_STEP_REPO_ID,
-        cache_dir=str(ACE_STEP_CACHE_DIR),
-    )
-    print(f"ACE-Step checkpoint downloaded to: {path}")
-    return path
-
-
-def _load_pipeline():
-    """Load ACE-Step pipeline with Mac-specific configuration.
-
-    Uses ACEStepPipeline which handles both DiT + codec internally.
-    Resolves checkpoint path locally first to avoid slow HF API calls.
-    """
-    global _pipeline, _pipeline_initialized
-
-    if _pipeline_initialized:
-        return _pipeline
+    if _handler_initialized:
+        return _handler
 
     try:
-        from acestep.pipeline_ace_step import ACEStepPipeline
+        from acestep.handler import AceStepHandler
+        from acestep.model_downloader import ensure_main_model, get_checkpoints_dir
     except ImportError:
         raise ImportError(
-            "ACE-Step not installed. Install with: "
-            "pip install git+https://github.com/ace-step/ACE-Step-1.5.git"
+            "Music engine components not installed. Please reinstall the application."
         )
 
     # Clear memory before loading
     _clear_mps_cache()
 
-    # Resolve checkpoint path (fast from local cache, slow download if missing)
-    checkpoint_dir = _resolve_checkpoint_dir()
+    # Ensure model weights are downloaded (idempotent — returns immediately if present)
+    print("Ensuring ACE-Step v1.5 model weights are available...")
+    success, message = ensure_main_model()
+    print(f"Model check: {message}")
+    if not success:
+        raise RuntimeError(f"Failed to download required files: {message}")
 
-    print("Loading ACE-Step pipeline...")
-    _pipeline = ACEStepPipeline(
-        checkpoint_dir=checkpoint_dir,
-        dtype="float32",
-        torch_compile=False,
-        cpu_offload=True,
-    )
-
-    # Force CPU device on Mac. PyTorch MPS has multiple fatal Metal shader bugs
-    # (sub_dense_scalar_lhs_float_float, masked_fill_scalar_strided_32bit, etc.)
+    # Initialize handler
+    # Force CPU for PyTorch components on macOS — MPS has fatal Metal shader bugs
+    # (mul_dense_scalar_float_float, masked_fill_scalar_strided_32bit, etc.)
     # that crash with validateComputeFunctionArguments assertions.
-    # PYTORCH_ENABLE_MPS_FALLBACK=1 can't catch fatal assertions.
-    if platform.system() == "Darwin":
-        _pipeline.device = torch.device("cpu")
-        print("Forced CPU device (MPS Metal shaders are buggy)")
+    # MLX components (DiT, VAE) still use GPU natively via use_mlx_dit=True.
+    device = "cpu" if platform.system() == "Darwin" else "auto"
 
-    # Pre-load the checkpoint so first generation isn't slow
-    if not _pipeline.loaded:
-        print("Loading model weights into memory...")
-        _pipeline.load_checkpoint(checkpoint_dir)
+    print(f"Initializing ACE-Step v1.5 handler (device={device})...")
+    _handler = AceStepHandler()
+    status, enabled = _handler.initialize_service(
+        project_root=str(get_checkpoints_dir()),
+        config_path="acestep-v15-turbo",
+        device=device,
+        offload_to_cpu=True,
+        use_mlx_dit=True,
+    )
+    print(f"ACE-Step handler initialized: {status} (enabled={enabled})")
 
-    print("ACE-Step pipeline loaded successfully")
+    if not enabled:
+        raise RuntimeError(f"Music engine failed to initialize: {status}")
 
-    _pipeline_initialized = True
-    return _pipeline
+    _handler_initialized = True
+    return _handler
 
 
 # MARK: - Health Endpoint
@@ -236,7 +201,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "models_loaded": ["acestep"] if _pipeline_initialized else [],
+        "models_loaded": ["acestep"] if _handler_initialized else [],
         "device": get_device()
     }
 
@@ -248,21 +213,15 @@ async def get_model_status():
     """Check which models are downloaded and their capabilities"""
     status = {}
     for name, info in MODEL_REGISTRY.items():
-        is_loaded = name == "acestep" and _pipeline_initialized
+        is_loaded = name == "acestep" and _handler_initialized
 
-        # Check if model weights exist in cache
+        # Check if model weights exist locally
         is_downloaded = is_loaded
         if name == "acestep" and not is_downloaded:
             try:
-                from huggingface_hub import snapshot_download
-                path = snapshot_download(
-                    ACE_STEP_REPO_ID,
-                    cache_dir=str(ACE_STEP_CACHE_DIR),
-                    local_files_only=True,
-                )
-                required = ["music_dcae_f8c8", "music_vocoder", "ace_step_transformer", "umt5-base"]
-                is_downloaded = all(os.path.exists(os.path.join(path, d)) for d in required)
-            except Exception:
+                from acestep.model_downloader import check_main_model_exists
+                is_downloaded = check_main_model_exists()
+            except ImportError:
                 is_downloaded = False
 
         status[name] = {
@@ -290,12 +249,12 @@ async def download_model(request: DownloadRequest):
             yield f'{{"status": "downloading", "progress": 0.1}}\n'
 
             # Download ACE-Step v1.5 — run in thread to avoid blocking event loop
-            yield f'{{"status": "downloading", "progress": 0.15, "message": "Initializing ACE-Step v1.5 download..."}}\n'
+            yield f'{{"status": "downloading", "progress": 0.15, "message": "Initializing download..."}}\n'
 
             loop = asyncio.get_event_loop()
             load_future = loop.run_in_executor(
                 _executor,
-                _load_pipeline,
+                _load_handler,
             )
 
             # Send keepalive progress updates every 5 seconds while model downloads
@@ -307,7 +266,7 @@ async def download_model(request: DownloadRequest):
                 # Slowly ramp progress from 0.15 to 0.75 over ~30 minutes (360 ticks)
                 progress = min(0.15 + tick * 0.005, 0.75)
                 elapsed_min = tick * 5 / 60
-                yield f'{{"status": "downloading", "progress": {progress:.3f}, "message": "Downloading ACE-Step v1.5 model ({elapsed_min:.1f} min elapsed)..."}}\n'
+                yield f'{{"status": "downloading", "progress": {progress:.3f}, "message": "Downloading required files ({elapsed_min:.1f} min elapsed)..."}}\n'
 
             # Check for errors from the thread
             try:
@@ -356,19 +315,18 @@ _executor = ThreadPoolExecutor(max_workers=2)
 def _generate_acestep_sync(
     request: GenerationRequest,
     progress_cb: ProgressCallback,
-) -> GenerationResponse:
+) -> list[GenerationResponse]:
     """Synchronous ACE-Step v1.5 generation with progress callbacks.
 
-    Uses ACEStepPipeline which handles both DiT + LM internally.
+    Uses AceStepHandler.generate_music() which returns audio tensors directly.
     Supports text2music and cover (audio2audio) task types.
+    Returns a list of GenerationResponse (one per batch item).
     """
-    import tempfile
-
     # Clear MPS cache before generation
     _clear_mps_cache()
 
-    progress_cb(0.05, "Loading ACE-Step v1.5 model...")
-    pipeline = _load_pipeline()
+    progress_cb(0.05, "Loading music engine...")
+    handler = _load_handler()
 
     # Quality mode determines inference steps
     if request.quality_mode == "draft":
@@ -378,18 +336,28 @@ def _generate_acestep_sync(
     else:  # "fast" (default)
         infer_steps = 8
 
-    # Default to instrumental if no lyrics provided
-    lyrics = request.lyrics if request.lyrics else "[inst]"
+    # Default to instrumental if no lyrics provided.
+    # Empty string "" means "keep source vocals" (used in cover mode).
+    if request.lyrics is not None:
+        lyrics = request.lyrics
+    else:
+        lyrics = "[inst]"
 
     # Cover mode: audio2audio via reference audio
     is_cover = request.task_type == "cover"
+    is_repaint = request.task_type == "repaint"
 
-    if is_cover and request.source_audio_path:
+    if (is_cover or is_repaint) and request.source_audio_path:
         if not os.path.exists(request.source_audio_path):
             raise FileNotFoundError(f"Source audio not found: {request.source_audio_path}")
 
+    # For repaint mode, override duration to repaint end
+    if is_repaint and request.repainting_end is not None:
+        duration = float(request.repainting_end)
+    else:
+        duration = float(request.duration)
+
     # Infer duration from source audio if cover mode and duration is 0
-    duration = float(request.duration)
     if is_cover and duration == 0 and request.source_audio_path:
         try:
             sr, audio = wavfile.read(request.source_audio_path)
@@ -397,150 +365,162 @@ def _generate_acestep_sync(
         except Exception:
             duration = 30.0  # fallback
 
+    batch_size = max(1, min(request.batch_size, 8))
+
+    # Build enriched caption with music metadata tags
+    caption_parts = []
+    if request.bpm is not None:
+        caption_parts.append(f"BPM: {request.bpm}")
+    if request.music_key:
+        caption_parts.append(f"Key: {request.music_key}")
+    if request.time_signature:
+        caption_parts.append(f"Time Signature: {request.time_signature}")
+    caption_prefix = ", ".join(caption_parts)
+    caption = f"{caption_prefix}. {request.prompt}" if caption_prefix else request.prompt
+
     progress_cb(0.10, "Preparing generation parameters...")
 
-    # Create temp directory for output
-    temp_dir = tempfile.mkdtemp(prefix="loopmaker_")
-
     try:
-        task_label = "Creating cover" if is_cover else "Generating audio"
-        progress_cb(0.15, f"{task_label} (ACE-Step v1.5)...")
+        if is_cover:
+            task_label = "Creating cover"
+        elif is_repaint:
+            task_label = "Extending track"
+        else:
+            task_label = "Generating audio"
 
-        # Build seed list
-        manual_seeds = [request.seed] if request.seed is not None else None
+        batch_suffix = f" ({batch_size} variations)" if batch_size > 1 else ""
+        progress_cb(0.15, f"{task_label}{batch_suffix}...")
 
-        # Monkey-patch tqdm to forward diffusion step progress (0.15 → 0.85)
-        import tqdm as _tqdm_module
-        _orig_tqdm_init = _tqdm_module.tqdm.__init__
-        _orig_tqdm_update = _tqdm_module.tqdm.update
+        # Native progress callback: maps handler's 0.0-1.0 range to 0.15-0.85
+        def _progress_bridge(val: float, desc: str):
+            mapped = 0.15 + val * 0.70
+            progress_cb(mapped, f"{task_label} ({desc})...")
 
-        def _patched_init(self, *args, **kwargs):
-            _orig_tqdm_init(self, *args, **kwargs)
-
-        def _patched_update(self, n=1):
-            _orig_tqdm_update(self, n)
-            if self.total and self.total > 0:
-                pct = self.n / self.total
-                mapped = 0.15 + pct * 0.70  # Map 0-1 → 0.15-0.85
-                progress_cb(mapped, f"{task_label} (step {self.n}/{self.total})...")
-
-        _tqdm_module.tqdm.__init__ = _patched_init
-        _tqdm_module.tqdm.update = _patched_update
-
-        # Call pipeline directly
-        print("Calling ACE-Step pipeline...")
+        print(f"Calling ACE-Step v1.5 handler.generate_music() batch_size={batch_size}...")
         import time as _time
         _t0 = _time.time()
-        try:
-            result = pipeline(
-                prompt=request.prompt,
-                lyrics=lyrics,
-                audio_duration=duration,
-                infer_step=infer_steps,
-                guidance_scale=request.guidance_scale,
-                scheduler_type="euler",
-                cfg_type="apg",
-                omega_scale=10.0,
-                audio2audio_enable=is_cover,
-                ref_audio_input=request.source_audio_path if is_cover else None,
-                ref_audio_strength=request.ref_audio_strength if is_cover else 0.5,
-                save_path=temp_dir,
-                batch_size=1,
-                format="wav",
-                manual_seeds=manual_seeds,
-            )
-        finally:
-            # Restore original tqdm
-            _tqdm_module.tqdm.__init__ = _orig_tqdm_init
-            _tqdm_module.tqdm.update = _orig_tqdm_update
 
-        print(f"Pipeline returned in {_time.time() - _t0:.1f}s, result type: {type(result)}")
-        print(f"Pipeline result: {result}")
+        # ACE-Step uses different instruction strings to activate cover/repaint conditioning.
+        # Without the cover instruction, is_covers=False and source audio latents are ignored.
+        cover_instruction = "Generate audio semantic tokens based on the given conditions:"
+        text2music_instruction = "Fill the audio semantic mask based on the given conditions:"
+        repaint_instruction = "Repaint the mask area based on the given conditions:"
+
+        if is_cover:
+            instruction = cover_instruction
+        elif is_repaint:
+            instruction = repaint_instruction
+        else:
+            instruction = text2music_instruction
+
+        # Build kwargs for repaint-specific parameters
+        gen_kwargs = dict(
+            captions=caption,
+            lyrics=lyrics,
+            audio_duration=duration,
+            inference_steps=infer_steps,
+            guidance_scale=request.guidance_scale,
+            task_type=request.task_type,
+            src_audio=request.source_audio_path if (is_cover or is_repaint) else None,
+            audio_cover_strength=request.ref_audio_strength if is_cover else 1.0,
+            instruction=instruction,
+            reference_audio=request.source_audio_path if is_cover else None,
+            batch_size=batch_size,
+            seed=request.seed if request.seed is not None else -1,
+            use_random_seed=(request.seed is None),
+            progress=_progress_bridge,
+        )
+
+        if is_repaint:
+            if request.repainting_start is not None:
+                gen_kwargs["repainting_start"] = request.repainting_start
+            if request.repainting_end is not None:
+                gen_kwargs["repainting_end"] = request.repainting_end
+
+        result = handler.generate_music(**gen_kwargs)
+
+        print(f"Handler returned in {_time.time() - _t0:.1f}s")
+
+        # Check for errors
+        if not result.get("success", False):
+            error_msg = result.get("error", "Unknown generation error")
+            raise RuntimeError(f"Generation failed: {error_msg}")
 
         progress_cb(0.85, "Processing audio...")
 
-        # result is a list: [audio_path_0, ..., input_params_dict]
-        # Find the first audio file path from the result
-        output_audio_path = None
-        if isinstance(result, list):
-            for item in result:
-                if isinstance(item, str) and Path(item).exists() and item.endswith(".wav"):
-                    output_audio_path = item
-                    break
+        # Extract audio tensors from result
+        audios = result.get("audios", [])
+        if not audios:
+            raise RuntimeError("Generation produced no audio")
 
-        # Fallback: search temp dir for generated WAV files
-        if not output_audio_path:
-            generated_files = list(Path(temp_dir).glob("**/*.wav"))
-            if not generated_files:
-                generated_files = list(Path(temp_dir).glob("**/*.flac")) + list(Path(temp_dir).glob("**/*.mp3"))
-            if generated_files:
-                output_audio_path = str(generated_files[0])
+        responses = []
+        for i, audio_dict in enumerate(audios):
+            audio_tensor = audio_dict["tensor"]  # [channels, samples], float32
+            sample_rate = audio_dict["sample_rate"]  # 48000
 
-        print(f"Output audio path: {output_audio_path}")
-        if not output_audio_path:
-            raise RuntimeError("ACE-Step generated no audio files")
+            print(f"Audio {i+1}/{len(audios)}: shape={audio_tensor.shape}, sr={sample_rate}")
 
-        # Read the generated file
-        print(f"Reading generated WAV file...")
-        sample_rate, audio_data = wavfile.read(output_audio_path)
-        print(f"WAV read: sr={sample_rate}, shape={audio_data.shape}, dtype={audio_data.dtype}")
+            # Convert tensor to numpy
+            audio_np = audio_tensor.cpu().numpy()  # [channels, samples]
 
-        # Convert to float for normalization
-        if audio_data.dtype == np.int16:
-            audio_float = audio_data.astype(np.float32) / 32767.0
-        elif audio_data.dtype == np.int32:
-            audio_float = audio_data.astype(np.float32) / 2147483647.0
-        else:
-            audio_float = audio_data.astype(np.float32)
+            # Preserve stereo output from ACE-Step (shape: [channels, samples])
+            if audio_np.ndim > 1 and audio_np.shape[0] >= 2:
+                # Stereo: transpose to [samples, channels] for scipy WAV
+                audio_float = audio_np[:2].T  # [samples, 2]
+            elif audio_np.ndim > 1:
+                audio_float = audio_np[0]  # single channel
+            else:
+                audio_float = audio_np
 
-        # Handle stereo by averaging channels
-        if audio_float.ndim > 1:
-            audio_float = audio_float.mean(axis=1)
+            # Normalize audio
+            max_val = np.max(np.abs(audio_float))
+            if max_val > 0:
+                audio_float = audio_float / max_val * 0.95
 
-        # Normalize audio
-        max_val = np.max(np.abs(audio_float))
-        if max_val > 0:
-            audio_float = audio_float / max_val * 0.95
+            # Convert to int16 for WAV
+            audio_int16 = (audio_float * 32767).astype(np.int16)
 
-        # Convert to int16 for WAV
-        audio_int16 = (audio_float * 32767).astype(np.int16)
+            # Write normalized WAV to shared tracks directory
+            final_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
+            print(f"Writing WAV {i+1} to {final_path}...")
+            wavfile.write(str(final_path), sample_rate, audio_int16)
+            print(f"WAV {i+1} written: {os.path.getsize(final_path)} bytes")
 
-        # Write normalized WAV to shared tracks directory
-        final_path = TRACKS_DIR / f"{uuid.uuid4()}.wav"
-        print(f"Writing final WAV to {final_path}...")
-        wavfile.write(str(final_path), sample_rate, audio_int16)
-        print(f"Final WAV written: {os.path.getsize(final_path)} bytes")
+            num_samples = audio_float.shape[0] if audio_float.ndim > 1 else len(audio_float)
+            duration_secs = num_samples / sample_rate
 
-        duration_secs = len(audio_float) / sample_rate
-        print(f"Returning response: path={final_path}, sr={sample_rate}, duration={duration_secs:.1f}s")
-        return GenerationResponse(
-            audio_path=str(final_path),
-            sample_rate=sample_rate,
-            duration=duration_secs,
-        )
+            responses.append(GenerationResponse(
+                audio_path=str(final_path),
+                sample_rate=sample_rate,
+                duration=duration_secs,
+            ))
+
+        print(f"Returning {len(responses)} response(s)")
+        return responses
 
     finally:
-        # Clean up temp directory
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
         # Clear MPS cache after generation
         _clear_mps_cache()
 
 
 async def generate_acestep_http(request: GenerationRequest) -> GenerationResponse:
-    """Generate music using ACE-Step v1.5 model (HTTP wrapper)."""
+    """Generate music using ACE-Step v1.5 model (HTTP wrapper).
+
+    Returns first result only (use WebSocket for batch results).
+    """
     try:
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        responses = await loop.run_in_executor(
             _executor,
             _generate_acestep_sync,
             request,
             lambda p, m: None,
         )
+        return responses[0]
     except ImportError:
         raise HTTPException(
             status_code=501,
-            detail="ACE-Step v1.5 not installed. Install with: pip install git+https://github.com/ace-step/ACE-Step-1.5.git",
+            detail="Music engine components not installed. Please reinstall the application.",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -586,6 +566,27 @@ async def ws_generate(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "error",
                     "detail": f"Source audio not found: {request.source_audio_path}",
+                })
+                return
+
+        # Validate repaint mode params
+        if request.task_type == "repaint":
+            if not request.source_audio_path:
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": "Repaint/extend mode requires source_audio_path",
+                })
+                return
+            if not os.path.exists(request.source_audio_path):
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": f"Source audio not found: {request.source_audio_path}",
+                })
+                return
+            if request.repainting_end is None:
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": "Repaint/extend mode requires repainting_end",
                 })
                 return
 
@@ -635,15 +636,22 @@ async def ws_generate(websocket: WebSocket):
 
         # 6. Get result or propagate error
         print("WebSocket: getting generation result...")
-        result: GenerationResponse = gen_future.result()
-        print(f"WebSocket: sending complete response - {result.audio_path}")
+        results: list[GenerationResponse] = gen_future.result()
+        print(f"WebSocket: sending complete response - {len(results)} variation(s)")
 
-        await websocket.send_json({
+        # Send all batch results. audio_path/duration are for backward compat (first result).
+        complete_msg = {
             "type": "complete",
-            "audio_path": result.audio_path,
-            "sample_rate": result.sample_rate,
-            "duration": result.duration,
-        })
+            "audio_path": results[0].audio_path,
+            "sample_rate": results[0].sample_rate,
+            "duration": results[0].duration,
+            "audio_paths": [r.audio_path for r in results],
+            "durations": [r.duration for r in results],
+        }
+        # Include the seed that was actually used (useful when random seed was generated)
+        if hasattr(results[0], 'seed') and results[0].seed is not None:
+            complete_msg["seed"] = results[0].seed
+        await websocket.send_json(complete_msg)
         print("WebSocket: complete message sent successfully")
 
     except WebSocketDisconnect:
@@ -664,11 +672,11 @@ async def ws_generate(websocket: WebSocket):
 @app.delete("/models/{model_name}")
 async def delete_model(model_name: str):
     """Unload a model from memory"""
-    global _pipeline, _pipeline_initialized
+    global _handler, _handler_initialized
 
-    if model_name == "acestep" and _pipeline_initialized:
-        _pipeline = None
-        _pipeline_initialized = False
+    if model_name == "acestep" and _handler_initialized:
+        _handler = None
+        _handler_initialized = False
         _clear_mps_cache()
         return {"status": "deleted", "model": model_name}
 

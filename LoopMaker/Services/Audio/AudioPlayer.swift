@@ -5,12 +5,39 @@ import os
 /// Audio player service for playback of generated tracks
 @MainActor
 public final class AudioPlayer: ObservableObject {
+    // MARK: - Repeat Mode
+
+    public enum RepeatMode: String, CaseIterable {
+        case off
+        case one
+        case all
+
+        public var icon: String {
+            switch self {
+            case .off: return "repeat"
+            case .one: return "repeat.1"
+            case .all: return "repeat"
+            }
+        }
+
+        public var next: RepeatMode {
+            switch self {
+            case .off: return .all
+            case .all: return .one
+            case .one: return .off
+            }
+        }
+    }
+
     // MARK: - Published State
 
     @Published public var isPlaying = false
     @Published public var currentTime: TimeInterval = 0
     @Published public var duration: TimeInterval = 0
     @Published public var progress: Double = 0
+    @Published public var didFinishPlaying = false
+    @Published public var volume: Float = 1.0
+    @Published public var repeatMode: RepeatMode = .off
 
     // MARK: - Formatted Time Strings
 
@@ -41,6 +68,8 @@ public final class AudioPlayer: ObservableObject {
 
     /// Load and play a track
     public func play(url: URL) {
+        didFinishPlaying = false
+
         // If same track and already loaded, just resume
         if currentTrackURL == url, let player = audioPlayer {
             if !player.isPlaying {
@@ -65,6 +94,7 @@ public final class AudioPlayer: ObservableObject {
             currentTime = 0
             progress = 0
 
+            player.volume = volume
             player.play()
             isPlaying = true
 
@@ -121,7 +151,14 @@ public final class AudioPlayer: ObservableObject {
 
     /// Set volume (0.0 to 1.0)
     public func setVolume(_ volume: Float) {
-        audioPlayer?.volume = max(0, min(1, volume))
+        let clamped = max(0, min(1, volume))
+        self.volume = clamped
+        audioPlayer?.volume = clamped
+    }
+
+    /// Cycle to the next repeat mode
+    public func cycleRepeatMode() {
+        repeatMode = repeatMode.next
     }
 
     /// Check if a specific URL is currently loaded
@@ -160,16 +197,26 @@ public final class AudioPlayer: ObservableObject {
         if !player.isPlaying && isPlaying {
             // Check if we reached the end
             if currentTime >= duration - 0.1 || progress >= 0.99 {
-                // Finished playing
-                isPlaying = false
-                stopDisplayLink()
+                if repeatMode == .one {
+                    // Loop the same track
+                    player.currentTime = 0
+                    currentTime = 0
+                    progress = 0
+                    player.play()
+                    logger.info("Looping track (repeat one)")
+                } else {
+                    // Finished playing - signal for next track or stop
+                    isPlaying = false
+                    didFinishPlaying = true
+                    stopDisplayLink()
 
-                // Reset to beginning for replay
-                player.currentTime = 0
-                currentTime = 0
-                progress = 0
+                    // Reset to beginning for replay
+                    player.currentTime = 0
+                    currentTime = 0
+                    progress = 0
 
-                logger.info("Playback finished")
+                    logger.info("Playback finished")
+                }
             }
         }
     }

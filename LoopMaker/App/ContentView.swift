@@ -1,49 +1,29 @@
 import SwiftUI
 
+extension AppState.MainSidebarTab {
+    var icon: String {
+        switch self {
+        case .home: return "house"
+        case .library: return "music.note.list"
+        case .settings: return "gearshape"
+        }
+    }
+
+    var selectedIcon: String {
+        switch self {
+        case .home: return "house.fill"
+        case .library: return "music.note.list"
+        case .settings: return "gearshape.fill"
+        }
+    }
+}
+
 /// Main window with Liquid Glass navigation (macOS 26+)
 /// Layout adapted from Echo-text: NavigationSplitView + glass sidebar + header toolbar
 struct MainWindow: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var licenseService = LicenseService.shared
-    @State private var selectedTab: SidebarTab = .home
-    @State private var selectedContentTab: ContentTab = .generate
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-
-    // MARK: - Sidebar Tabs
-
-    enum SidebarTab: String, CaseIterable, Identifiable {
-        case home = "Home"
-        case library = "Library"
-        case settings = "Settings"
-
-        var id: String { rawValue }
-
-        var icon: String {
-            switch self {
-            case .home: return "house"
-            case .library: return "music.note.list"
-            case .settings: return "gearshape"
-            }
-        }
-
-        var selectedIcon: String {
-            switch self {
-            case .home: return "house.fill"
-            case .library: return "music.note.list"
-            case .settings: return "gearshape.fill"
-            }
-        }
-
-        static var mainTabs: [SidebarTab] { [.home, .library] }
-        static var bottomTabs: [SidebarTab] { [.settings] }
-    }
-
-    // MARK: - Content Tabs (shown inside Home)
-
-    enum ContentTab: String, CaseIterable {
-        case generate = "Generate"
-        case favorites = "Favorites"
-    }
 
     // MARK: - Body
 
@@ -97,19 +77,40 @@ struct MainWindow: View {
                     track: playingTrack,
                     audioPlayer: appState.audioPlayer,
                     onPlayPause: { appState.togglePlayPause() },
-                    onSeek: { appState.seekPlayback(to: $0) }
+                    onSeek: { appState.seekPlayback(to: $0) },
+                    onPrevious: appState.canPlayPrevious ? { appState.playPreviousTrack() } : nil,
+                    onNext: appState.canPlayNext ? { appState.playNextTrack() } : nil,
+                    onRepeatToggle: { appState.cycleRepeatMode() },
+                    onVolumeChange: { appState.setVolume($0) }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-
-            // Status bar footer (always visible, not overlapping)
-            StatusBarView()
         }
         .frame(minWidth: 900, minHeight: 620)
+        .onChange(of: appState.audioPlayer.didFinishPlaying) {
+            guard appState.audioPlayer.didFinishPlaying else { return }
+            let repeatMode = appState.audioPlayer.repeatMode
+            if repeatMode == .all && appState.canPlayNext {
+                appState.playNextTrack()
+            } else if repeatMode == .all && !appState.canPlayNext {
+                // Wrap around to first track
+                if let first = appState.tracks.last {
+                    appState.playTrack(first)
+                }
+            } else if repeatMode == .off && appState.canPlayNext {
+                appState.playNextTrack()
+            }
+            // .one is handled internally by AudioPlayer (loops same track)
+        }
         .sheet(isPresented: $appState.showExport) {
             if let track = appState.selectedTrack {
                 ExportView(track: track)
             }
+        }
+        .onChange(of: appState.showNewGeneration) {
+            guard appState.showNewGeneration else { return }
+            navigateToGenerate()
+            appState.showNewGeneration = false
         }
     }
 
@@ -124,7 +125,7 @@ struct MainWindow: View {
             // Main tabs with glass effect
             GlassEffectContainer {
                 VStack(spacing: 2) {
-                    ForEach(SidebarTab.mainTabs) { tab in
+                    ForEach([AppState.MainSidebarTab.home, .library]) { tab in
                         sidebarButton(tab)
                     }
                 }
@@ -140,34 +141,38 @@ struct MainWindow: View {
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.bottom, 12)
+
+            StatusBarView(embeddedInSidebar: true)
+                .padding(.horizontal, 8)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
         }
     }
 
-    private func sidebarButton(_ tab: SidebarTab) -> some View {
+    private func sidebarButton(_ tab: AppState.MainSidebarTab) -> some View {
         Button {
             withAnimation(.easeInOut(duration: 0.2)) {
-                selectedTab = tab
+                appState.selectedMainSidebarTab = tab
             }
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: selectedTab == tab ? tab.selectedIcon : tab.icon)
-                    .font(.system(size: 15, weight: selectedTab == tab ? .medium : .regular))
+                Image(systemName: appState.selectedMainSidebarTab == tab ? tab.selectedIcon : tab.icon)
+                    .font(.system(size: 15, weight: appState.selectedMainSidebarTab == tab ? .medium : .regular))
                     .frame(width: 20)
                 Text(tab.rawValue)
-                    .font(.system(size: 13, weight: selectedTab == tab ? .medium : .regular))
+                    .font(.system(size: 13, weight: appState.selectedMainSidebarTab == tab ? .medium : .regular))
                 Spacer()
             }
-            .foregroundColor(selectedTab == tab ? .primary : .secondary)
+            .foregroundColor(appState.selectedMainSidebarTab == tab ? .primary : .secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
             .background(
-                selectedTab == tab
+                appState.selectedMainSidebarTab == tab
                     ? Color.primary.opacity(0.1)
                     : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
     }
@@ -176,12 +181,12 @@ struct MainWindow: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        switch selectedTab {
+        switch appState.selectedMainSidebarTab {
         case .home:
             VStack(spacing: 0) {
                 headerToolbar
 
-                switch selectedContentTab {
+                switch appState.selectedHomeContentTab {
                 case .generate:
                     GenerationView()
                 case .favorites:
@@ -198,6 +203,13 @@ struct MainWindow: View {
         }
     }
 
+    private func navigateToGenerate() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            appState.selectedMainSidebarTab = .home
+            appState.selectedHomeContentTab = .generate
+        }
+    }
+
     // MARK: - Header Toolbar (Glass Tabs)
 
     @Namespace private var headerNamespace
@@ -206,21 +218,21 @@ struct MainWindow: View {
         HStack(spacing: 16) {
             // Tab pills with Liquid Glass
             HStack(spacing: 2) {
-                ForEach(ContentTab.allCases, id: \.self) { tab in
+                ForEach(AppState.HomeContentTab.allCases, id: \.self) { tab in
                     Button {
                         withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
-                            selectedContentTab = tab
+                            appState.selectedHomeContentTab = tab
                         }
                     } label: {
                         Text(tab.rawValue)
-                            .font(.system(size: 13, weight: selectedContentTab == tab ? .semibold : .medium))
-                            .foregroundColor(selectedContentTab == tab ? .primary : .secondary)
+                            .font(.system(size: 13, weight: appState.selectedHomeContentTab == tab ? .semibold : .medium))
+                            .foregroundColor(appState.selectedHomeContentTab == tab ? .primary : .secondary)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
-                            .background(
-                                selectedContentTab == tab
-                                    ? Color.primary.opacity(0.12)
-                                    : Color.clear,
+                            .glassEffect(
+                                appState.selectedHomeContentTab == tab
+                                    ? .regular.tint(DesignSystem.Colors.accent.opacity(0.2)).interactive()
+                                    : .clear,
                                 in: .capsule
                             )
                     }

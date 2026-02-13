@@ -4,6 +4,10 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedTab: SettingsTab = .general
+    @State private var showCleanInstallConfirmation = false
+    @State private var showClearTracksConfirmation = false
+    @State private var isRestartingBackend = false
+    @State private var isCleanInstalling = false
 
     enum SettingsTab: String, CaseIterable {
         case general = "General"
@@ -125,6 +129,79 @@ struct SettingsView: View {
 
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 16) {
+            // Backend
+            settingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Music Engine", systemImage: "server.rack")
+                        .font(.system(size: 14, weight: .semibold))
+
+                    HStack {
+                        Text("Status")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(backendStatusColor)
+                                .frame(width: 8, height: 8)
+                            Text(backendStatusText)
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                    }
+
+                    Divider()
+
+                    HStack(spacing: 12) {
+                        Button {
+                            isRestartingBackend = true
+                            Task {
+                                await appState.restartBackend()
+                                isRestartingBackend = false
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isRestartingBackend {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                                Text("Restart Engine")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                        }
+                        .disabled(isRestartingBackend || isCleanInstalling)
+
+                        Button(role: .destructive) {
+                            showCleanInstallConfirmation = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isCleanInstalling {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                                Text("Clean Install")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                        }
+                        .disabled(isRestartingBackend || isCleanInstalling)
+                        .alert("Clean Install Backend?", isPresented: $showCleanInstallConfirmation) {
+                            Button("Cancel", role: .cancel) {}
+                            Button("Clean Install", role: .destructive) {
+                                isCleanInstalling = true
+                                Task {
+                                    await appState.cleanInstallBackend()
+                                    isCleanInstalling = false
+                                }
+                            }
+                        } message: {
+                            Text(
+                                "This will reset the music engine and reinstall all components. "
+                                + "This may take several minutes."
+                            )
+                        }
+                    }
+                }
+            }
+
             // Storage
             settingsCard {
                 VStack(alignment: .leading, spacing: 12) {
@@ -152,15 +229,50 @@ struct SettingsView: View {
                     Divider()
 
                     Button(role: .destructive) {
-                        clearAllTracks()
+                        showClearTracksConfirmation = true
                     } label: {
                         Text("Clear All Tracks")
                             .font(.system(size: 13, weight: .medium))
                     }
                     .disabled(appState.tracks.isEmpty)
+                    .alert("Clear All Tracks?", isPresented: $showClearTracksConfirmation) {
+                        Button("Cancel", role: .cancel) {}
+                        Button("Clear All", role: .destructive) {
+                            clearAllTracks()
+                        }
+                    } message: {
+                        Text("This permanently deletes \(appState.tracks.count) track(s) and their audio files.")
+                    }
                 }
             }
+        }
+    }
 
+    // MARK: - Backend Status Helpers
+
+    private var backendStatusColor: Color {
+        switch appState.backendManager.state {
+        case .running:
+            return .green
+        case .error:
+            return .red
+        case .notStarted:
+            return .gray
+        default:
+            return .yellow
+        }
+    }
+
+    private var backendStatusText: String {
+        switch appState.backendManager.state {
+        case .running:
+            return "Running"
+        case .error:
+            return "Error"
+        case .notStarted:
+            return "Stopped"
+        default:
+            return "Starting..."
         }
     }
 

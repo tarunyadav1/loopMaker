@@ -48,7 +48,7 @@ public final class BackendProcessManager: ObservableObject {
             case .checkingPython:
                 return "Checking system requirements..."
             case .pythonMissing:
-                return "Python 3.11 not found. ACE-Step v1.5 requires Python 3.11.x."
+                return "Python 3.11 not found. Please install Python 3.11.x to continue."
             case .checkingVenv:
                 return "Checking environment..."
             case .creatingVenv:
@@ -73,12 +73,16 @@ public final class BackendProcessManager: ObservableObject {
     @Published public var state: State = .notStarted
     @Published public var setupProgress: Double = 0
     @Published public var isFirstLaunch = false
+    @Published public var port: Int = 8000
 
     // MARK: - Private Properties
 
     private var backendProcess: Process?
     private var healthCheckTask: Task<Void, Never>?
     private var isStarting = false
+    private var crashRetryCount = 0
+    private let maxCrashRetries = 3
+    private static let portRange = 8000...8003
     private let logger = Logger(subsystem: "com.loopmaker.LoopMaker", category: "BackendProcess")
 
     // MARK: - Paths
@@ -340,11 +344,72 @@ public final class BackendProcessManager: ObservableObject {
         await ensureBackendRunning()
     }
 
+    /// Restart the backend process without rebuilding the venv.
+    /// - Parameter resetRetryCount: When `true` (default for manual restarts), resets the crash
+    ///   retry counter. Auto-recovery passes `false` to preserve the counter.
+    public func restartBackend(resetRetryCount: Bool = true) async {
+        logger.info("Restarting backend...")
+        await stopBackend()
+        state = .notStarted
+        if resetRetryCount {
+            crashRetryCount = 0
+        }
+
+        do {
+            state = .startingBackend
+            setupProgress = 0.9
+            try await launchBackend()
+
+            state = .waitingForHealth
+            try await waitForHealthy()
+
+            setupProgress = 1.0
+            state = .running
+            startHealthMonitoring()
+        } catch {
+            state = .error("Restart failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Stop the backend, wipe the venv and setup sentinel, then re-run full setup.
+    public func cleanInstall() async {
+        logger.info("Starting clean install...")
+        await stopBackend()
+        state = .notStarted
+        setupProgress = 0
+        crashRetryCount = 0
+
+        // Remove venv and setup sentinel (prod mode only)
+        if !isDevMode && !isBundledMode {
+            try? FileManager.default.removeItem(at: venvURL)
+            try? FileManager.default.removeItem(at: setupCompleteURL)
+        }
+
+        await ensureBackendRunning()
+    }
+
+    /// The Application Support backend directory, exposed for cache cleanup.
+    public var backendDirectoryURL: URL { backendURL }
+
+    /// Current backend PID (if known and alive), for lightweight telemetry in UI.
+    public var currentBackendPID: Int32? {
+        if let process = backendProcess, process.isRunning {
+            return process.processIdentifier
+        }
+
+        if let (savedPid, _) = loadPidAndPort(), kill(savedPid, 0) == 0 {
+            return savedPid
+        }
+
+        return nil
+    }
+
     // MARK: - Health Monitoring
 
     /// Periodically check backend health after reaching .running state.
-    /// Detects process crashes and unresponsive backends.
+    /// Detects process crashes and attempts auto-recovery before reporting errors.
     private func startHealthMonitoring() {
+        crashRetryCount = 0
         healthCheckTask?.cancel()
         healthCheckTask = Task {
             while !Task.isCancelled {
@@ -354,12 +419,26 @@ public final class BackendProcessManager: ObservableObject {
                 // Fast check: is the process still alive?
                 if backendProcess?.isRunning != true {
                     logger.error("Backend process died unexpectedly")
-                    state = .error("Backend process died unexpectedly")
-                    break
+
+                    if crashRetryCount < maxCrashRetries {
+                        crashRetryCount += 1
+                        let attempt = crashRetryCount
+                        logger.info("Auto-restart attempt \(attempt)/\(self.maxCrashRetries)...")
+                        await restartBackend(resetRetryCount: false)
+                        // If restart succeeded, restartBackend already calls startHealthMonitoring
+                        // which replaces this task, so we can break out of this loop.
+                        break
+                    } else {
+                        state = .error(
+                            "Backend crashed repeatedly (\(self.maxCrashRetries) retries exhausted). "
+                            + "Try restarting from Settings."
+                        )
+                        break
+                    }
                 }
 
                 // Slow check: is the HTTP endpoint responding?
-                let healthURL = URL(string: "http://127.0.0.1:8000/health")!
+                let healthURL = URL(string: "http://127.0.0.1:\(self.port)/health")!
                 do {
                     let (_, response) = try await URLSession.shared.data(from: healthURL)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -576,12 +655,25 @@ public final class BackendProcessManager: ObservableObject {
     private func launchBackend() async throws {
         logger.info("Launching backend server...")
 
-        // Check if port 8000 is already in use by another process
-        if let lsofOutput = await runShellCommand("lsof -i :8000 -t"),
-           !lsofOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            logger.error("Port 8000 is already in use")
+        // Find an available port from the range
+        var selectedPort: Int?
+        for candidate in Self.portRange {
+            if let lsofOutput = await runShellCommand("lsof -i :\(candidate) -t"),
+               !lsofOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                logger.info("Port \(candidate) is in use, trying next...")
+                continue
+            }
+            selectedPort = candidate
+            break
+        }
+
+        guard let chosenPort = selectedPort else {
+            logger.error("All ports \(Self.portRange) are in use")
             throw BackendSetupError.portConflict
         }
+
+        port = chosenPort
+        logger.info("Selected port: \(chosenPort)")
 
         let workingDir = backendWorkingURL
         let pythonPath: URL
@@ -601,7 +693,7 @@ public final class BackendProcessManager: ObservableObject {
 
         let process = Process()
         process.executableURL = pythonPath
-        process.arguments = ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"]
+        process.arguments = ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "\(chosenPort)"]
         process.currentDirectoryURL = workingDir
         process.environment = env
         logger.info("Backend working directory: \(workingDir.path)")
@@ -626,14 +718,14 @@ public final class BackendProcessManager: ObservableObject {
         try process.run()
         backendProcess = process
 
-        // Save PID for crash recovery
+        // Save PID and port for crash recovery
         savePid(process.processIdentifier)
 
-        logger.info("Backend process started with PID: \(process.processIdentifier)")
+        logger.info("Backend process started with PID: \(process.processIdentifier) on port \(chosenPort)")
     }
 
     private func waitForHealthy(timeout: TimeInterval = 30) async throws {
-        let healthURL = URL(string: "http://127.0.0.1:8000/health")!
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
         let startTime = Date()
 
         while Date().timeIntervalSince(startTime) < timeout {
@@ -664,14 +756,14 @@ public final class BackendProcessManager: ObservableObject {
 
     private func cleanupOrphanedProcesses() async {
         // Check for orphaned process from previous crash
-        guard let savedPid = loadPid() else { return }
+        guard let (savedPid, savedPort) = loadPidAndPort() else { return }
 
-        logger.info("Found orphaned PID: \(savedPid), checking if alive...")
+        logger.info("Found orphaned PID: \(savedPid) on port \(savedPort), checking if alive...")
 
         // Check if process is still running
         if kill(savedPid, 0) == 0 {
-            // Process exists, check if it's our backend (listening on 8000)
-            if let output = await runShellCommand("lsof -i :8000 -t"),
+            // Process exists, check if it's our backend (listening on saved port)
+            if let output = await runShellCommand("lsof -i :\(savedPort) -t"),
                output.contains(String(savedPid)) {
                 logger.info("Killing orphaned backend process: \(savedPid)")
                 kill(savedPid, SIGTERM)
@@ -686,16 +778,28 @@ public final class BackendProcessManager: ObservableObject {
         cleanupPidFile()
     }
 
+    /// Save PID and port in format "pid:port" for orphan cleanup.
     private func savePid(_ pid: Int32) {
-        try? String(pid).write(to: pidFileURL, atomically: true, encoding: .utf8)
+        try? "\(pid):\(port)".write(to: pidFileURL, atomically: true, encoding: .utf8)
     }
 
-    private func loadPid() -> Int32? {
-        guard let content = try? String(contentsOf: pidFileURL, encoding: .utf8),
-              let pid = Int32(content.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+    /// Load PID and port from the pid file. Falls back to port 8000 for old-format files.
+    private func loadPidAndPort() -> (pid: Int32, port: Int)? {
+        guard let content = try? String(contentsOf: pidFileURL, encoding: .utf8) else {
             return nil
         }
-        return pid
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: ":")
+        if parts.count == 2,
+           let pid = Int32(parts[0]),
+           let savedPort = Int(parts[1]) {
+            return (pid, savedPort)
+        }
+        // Legacy format: just PID
+        if let pid = Int32(trimmed) {
+            return (pid, 8000)
+        }
+        return nil
     }
 
     private func cleanupPidFile() {
@@ -784,7 +888,7 @@ public enum BackendSetupError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .pythonNotFound:
-            return "Python 3.11 is required but not found. ACE-Step v1.5 requires Python 3.11.x."
+            return "Python 3.11 is required but not found. Please install Python 3.11.x to continue."
         case .venvCreationFailed:
             return "Failed to create Python virtual environment."
         case .backendFilesNotFound:
@@ -796,7 +900,7 @@ public enum BackendSetupError: LocalizedError {
         case .healthCheckTimeout:
             return "Music engine failed to respond in time."
         case .portConflict:
-            return "Port 8000 is already in use by another application. Please close it and try again."
+            return "Ports 8000–8003 are all in use. Please free one and try again."
         }
     }
 }

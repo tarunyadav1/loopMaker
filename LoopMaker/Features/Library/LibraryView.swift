@@ -5,63 +5,175 @@ struct LibraryView: View {
     @State private var localTrackSelection: Track?
     @State private var viewMode: ViewMode = .grid
     @State private var searchText = ""
+    @State private var showDetail = false
+    @State private var sortOrder: LibrarySortOrder = .newestFirst
+    @State private var activeFilter: LibraryFilter = .all
+    @State private var isMultiSelectMode = false
+    @State private var selectedTrackIDs: Set<UUID> = []
+    @State private var showDeleteSelectedConfirmation = false
 
     enum ViewMode {
         case grid, list
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            headerView
+    enum LibrarySortOrder: String, CaseIterable {
+        case newestFirst = "Newest First"
+        case oldestFirst = "Oldest First"
+        case nameAZ = "Name A-Z"
+        case nameZA = "Name Z-A"
+        case durationAsc = "Shortest First"
+        case durationDesc = "Longest First"
+    }
 
-            // Content
-            if appState.tracks.isEmpty {
-                emptyState
+    enum LibraryFilter: String, CaseIterable {
+        case all = "All"
+        case favorites = "Favorites"
+        case covers = "Covers"
+        case extended = "Extended"
+        case withLyrics = "With Lyrics"
+    }
+
+    var body: some View {
+        Group {
+            if showDetail, !isMultiSelectMode, let selected = localTrackSelection {
+                TrackDetailPanel(track: selected) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showDetail = false
+                    }
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
-                trackContent
+                libraryContent
             }
         }
         .background(Theme.background)
     }
 
+    private var libraryContent: some View {
+        VStack(spacing: 0) {
+            // Header
+            headerView
+
+            // Content
+            ZStack(alignment: .bottom) {
+                if appState.tracks.isEmpty {
+                    emptyState
+                } else {
+                    trackContent
+                }
+
+                // Multi-select floating action bar
+                if isMultiSelectMode && !selectedTrackIDs.isEmpty {
+                    multiSelectActionBar
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+    }
+
     // MARK: - Header
 
     private var headerView: some View {
-        HStack(spacing: Spacing.md) {
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("Library")
-                    .title1Text()
+        VStack(spacing: 0) {
+            HStack(spacing: Spacing.md) {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Library")
+                        .title1Text()
 
-                Text("\(appState.tracks.count) tracks")
-                    .font(Typography.caption)
-                    .foregroundStyle(Theme.textTertiary)
-            }
-
-            Spacer()
-
-            // Search
-            SearchBar(text: $searchText, placeholder: "Search library...", showShortcut: false)
-                .frame(maxWidth: 250)
-
-            // View toggle
-            HStack(spacing: Spacing.xs) {
-                ViewModeButton(icon: "square.grid.2x2", isSelected: viewMode == .grid) {
-                    viewMode = .grid
+                    Text("\(appState.tracks.count) tracks")
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.textTertiary)
                 }
 
-                ViewModeButton(icon: "list.bullet", isSelected: viewMode == .list) {
-                    viewMode = .list
+                Spacer()
+
+                HStack(spacing: Spacing.sm) {
+                    // Search
+                    SearchBar(text: $searchText, placeholder: "Search library...", showShortcut: false)
+                        .frame(maxWidth: 280)
+
+                    // Sort menu
+                    Menu {
+                        ForEach(LibrarySortOrder.allCases, id: \.self) { order in
+                            Button {
+                                sortOrder = order
+                            } label: {
+                                HStack {
+                                    Text(order.rawValue)
+                                    if sortOrder == order {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 12))
+                            Text(sortOrder.rawValue)
+                                .font(Typography.caption)
+                        }
+                        .foregroundStyle(Theme.textSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+
+                    // View toggle
+                    HStack(spacing: Spacing.xs) {
+                        ViewModeButton(icon: "square.grid.2x2", isSelected: viewMode == .grid) {
+                            viewMode = .grid
+                        }
+
+                        ViewModeButton(icon: "list.bullet", isSelected: viewMode == .list) {
+                            viewMode = .list
+                        }
+
+                        ViewModeButton(icon: "checkmark.circle", isSelected: isMultiSelectMode) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isMultiSelectMode.toggle()
+                                if !isMultiSelectMode {
+                                    selectedTrackIDs.removeAll()
+                                }
+                            }
+                        }
+                    }
+
+                    // New track button
+                    ActionButton(title: "New", icon: "plus", variant: .primary, size: .medium) {
+                        appState.showNewGeneration = true
+                    }
                 }
             }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
 
-            // New track button
-            ActionButton(title: "New", icon: "plus", variant: .primary, size: .medium) {
-                appState.selectedSidebarItem = .generate
+            // Filter chips
+            if !appState.tracks.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Spacing.sm) {
+                        ForEach(LibraryFilter.allCases, id: \.self) { filter in
+                            FilterChip(
+                                title: filter.rawValue,
+                                isSelected: activeFilter == filter,
+                                action: {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        activeFilter = filter
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.bottom, Spacing.sm)
+                }
             }
         }
-        .padding(.horizontal, Spacing.lg)
-        .padding(.vertical, Spacing.md)
         .background(Theme.backgroundSecondary)
     }
 
@@ -91,7 +203,7 @@ struct LibraryView: View {
             }
 
             ActionButton(title: "Generate Music", icon: "waveform", variant: .gradient, size: .large) {
-                appState.selectedSidebarItem = .generate
+                appState.showNewGeneration = true
             }
 
             Spacer()
@@ -103,7 +215,9 @@ struct LibraryView: View {
 
     private var trackContent: some View {
         ScrollView {
-            if viewMode == .grid {
+            if filteredTracks.isEmpty {
+                noResultsState
+            } else if viewMode == .grid {
                 trackGrid
             } else {
                 trackList
@@ -113,6 +227,52 @@ struct LibraryView: View {
         .padding(.vertical, Spacing.md)
     }
 
+    private var noResultsState: some View {
+        VStack(spacing: Spacing.md) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 28))
+                .foregroundStyle(Theme.textTertiary)
+
+            VStack(spacing: Spacing.xs) {
+                Text("No Matching Tracks")
+                    .title3Text()
+
+                Text("Try a different search term or clear filters.")
+                    .font(Typography.body)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            HStack(spacing: Spacing.sm) {
+                if !searchText.isEmpty {
+                    Button("Clear Search") {
+                        searchText = ""
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if activeFilter != .all {
+                    Button("Reset Filters") {
+                        activeFilter = .all
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 260)
+        .padding(.top, Spacing.xl)
+    }
+
+    private func isTrackSelected(_ track: Track) -> Bool {
+        if isMultiSelectMode {
+            return selectedTrackIDs.contains(track.id)
+        }
+        return localTrackSelection?.id == track.id
+    }
+
+    private func isNowPlaying(_ track: Track) -> Bool {
+        appState.audioPlayer.isPlaying && appState.audioPlayer.isCurrentTrack(track.audioURL)
+    }
+
     private var trackGrid: some View {
         LazyVGrid(columns: [
             GridItem(.adaptive(minimum: 200, maximum: 280), spacing: Spacing.md)
@@ -120,9 +280,10 @@ struct LibraryView: View {
             ForEach(filteredTracks) { track in
                 TrackGridItem(
                     track: track,
-                    isSelected: localTrackSelection?.id == track.id,
+                    isSelected: isTrackSelected(track),
+                    isNowPlaying: isNowPlaying(track),
                     onTap: { selectTrack(track) },
-                    onDoubleTap: { playTrack(track) }
+                    onDoubleTap: { if !isMultiSelectMode { playTrack(track) } }
                 )
                 .contextMenu { trackContextMenu(for: track) }
             }
@@ -134,9 +295,10 @@ struct LibraryView: View {
             ForEach(filteredTracks) { track in
                 DarkTrackRow(
                     track: track,
-                    isSelected: localTrackSelection?.id == track.id,
+                    isSelected: isTrackSelected(track),
+                    isNowPlaying: isNowPlaying(track),
                     onTap: { selectTrack(track) },
-                    onDoubleTap: { playTrack(track) }
+                    onDoubleTap: { if !isMultiSelectMode { playTrack(track) } }
                 )
                 .contextMenu { trackContextMenu(for: track) }
             }
@@ -144,20 +306,161 @@ struct LibraryView: View {
     }
 
     private var filteredTracks: [Track] {
-        if searchText.isEmpty {
-            return appState.tracks
+        var tracks = appState.tracks
+
+        // 1. Apply filter
+        switch activeFilter {
+        case .all: break
+        case .favorites: tracks = tracks.filter { $0.isFavorite }
+        case .covers: tracks = tracks.filter { $0.isCover }
+        case .extended: tracks = tracks.filter { $0.isExtended }
+        case .withLyrics: tracks = tracks.filter { $0.hasLyrics }
         }
-        return appState.tracks.filter {
-            $0.prompt.localizedCaseInsensitiveContains(searchText) ||
-            ($0.title?.localizedCaseInsensitiveContains(searchText) ?? false)
+
+        // 2. Apply search
+        if !searchText.isEmpty {
+            tracks = tracks.filter {
+                $0.prompt.localizedCaseInsensitiveContains(searchText) ||
+                ($0.title?.localizedCaseInsensitiveContains(searchText) ?? false)
+            }
+        }
+
+        // 3. Apply sort
+        switch sortOrder {
+        case .newestFirst:
+            tracks.sort { $0.createdAt > $1.createdAt }
+        case .oldestFirst:
+            tracks.sort { $0.createdAt < $1.createdAt }
+        case .nameAZ:
+            tracks.sort { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
+        case .nameZA:
+            tracks.sort { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedDescending }
+        case .durationAsc:
+            tracks.sort { $0.durationSeconds < $1.durationSeconds }
+        case .durationDesc:
+            tracks.sort { $0.durationSeconds > $1.durationSeconds }
+        }
+
+        return tracks
+    }
+
+    // MARK: - Multi-Select Action Bar
+
+    private var multiSelectActionBar: some View {
+        HStack(spacing: Spacing.md) {
+            Text("\(selectedTrackIDs.count) selected")
+                .font(Typography.bodyMedium)
+                .foregroundStyle(Theme.textPrimary)
+
+            Spacer()
+
+            Button {
+                for id in selectedTrackIDs {
+                    if let track = appState.tracks.first(where: { $0.id == id }), !track.isFavorite {
+                        appState.toggleFavorite(track)
+                    }
+                }
+                selectedTrackIDs.removeAll()
+            } label: {
+                Label("Favorite", systemImage: "heart")
+                    .font(Typography.captionMedium)
+            }
+            .buttonStyle(.bordered)
+
+            // Batch export
+            Button {
+                batchExportSelectedTracks()
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+                    .font(Typography.captionMedium)
+            }
+            .buttonStyle(.bordered)
+
+            Button(role: .destructive) {
+                showDeleteSelectedConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .font(Typography.captionMedium)
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .alert("Delete Selected Tracks?", isPresented: $showDeleteSelectedConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    appState.deleteMultipleTracks(selectedTrackIDs)
+                    selectedTrackIDs.removeAll()
+                    isMultiSelectMode = false
+                }
+            } message: {
+                Text("This permanently deletes \(selectedTrackIDs.count) track(s) and their audio files.")
+            }
+
+            Button {
+                selectedTrackIDs.removeAll()
+                isMultiSelectMode = false
+            } label: {
+                Text("Cancel")
+                    .font(Typography.captionMedium)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.2), radius: 8, y: -2)
+        )
+        .padding(.horizontal, Spacing.sm)
+        .padding(.bottom, Spacing.sm)
+    }
+
+    private func batchExportSelectedTracks() {
+        let tracks = appState.tracks.filter { selectedTrackIDs.contains($0.id) }
+        guard !tracks.isEmpty else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Export Here"
+        panel.message = "Choose a folder to export \(tracks.count) track(s) as WAV"
+
+        panel.begin { response in
+            guard response == .OK, let folderURL = panel.url else { return }
+            for track in tracks {
+                let destName = "\(track.displayTitle).wav"
+                let destURL = folderURL.appendingPathComponent(destName)
+                do {
+                    if FileManager.default.fileExists(atPath: destURL.path) {
+                        try FileManager.default.removeItem(at: destURL)
+                    }
+                    try FileManager.default.copyItem(at: track.audioURL, to: destURL)
+                } catch {
+                    Log.export.error("Batch export error for \(track.displayTitle): \(error.localizedDescription)")
+                }
+            }
+            selectedTrackIDs.removeAll()
+            isMultiSelectMode = false
         }
     }
 
     // MARK: - Actions
 
     private func selectTrack(_ track: Track) {
-        localTrackSelection = track
-        appState.selectedTrack = track
+        if isMultiSelectMode {
+            if selectedTrackIDs.contains(track.id) {
+                selectedTrackIDs.remove(track.id)
+            } else {
+                selectedTrackIDs.insert(track.id)
+            }
+        } else {
+            localTrackSelection = track
+            appState.selectedTrack = track
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showDetail = true
+            }
+        }
     }
 
     private func playTrack(_ track: Track) {
@@ -208,8 +511,18 @@ struct ViewModeButton: View {
                 .foregroundStyle(isSelected ? Theme.accentPrimary : Theme.textSecondary)
                 .frame(width: 32, height: 32)
                 .background(
-                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                        .fill(isSelected ? Theme.accentPrimary.opacity(0.15) : (isHovered ? Theme.backgroundTertiary : Color.clear))
+                    Group {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                                .glassEffect(
+                                    .regular.tint(Theme.accentPrimary.opacity(0.16)).interactive(),
+                                    in: RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                                )
+                        } else {
+                            RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                                .fill(isHovered ? Theme.backgroundTertiary : Color.clear)
+                        }
+                    }
                 )
         }
         .buttonStyle(.plain)
@@ -219,83 +532,194 @@ struct ViewModeButton: View {
     }
 }
 
+// MARK: - Filter Chip
+
+struct FilterChip: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Typography.captionMedium)
+                .foregroundStyle(isSelected ? Theme.accentPrimary : Theme.textSecondary)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, 6)
+                .background(
+                    Group {
+                        if isSelected {
+                            Capsule()
+                                .glassEffect(
+                                    .regular.tint(Theme.accentPrimary.opacity(0.16)).interactive(),
+                                    in: Capsule()
+                                )
+                        } else {
+                            Capsule()
+                                .fill(
+                                    isHovered
+                                        ? Theme.backgroundTertiary
+                                        : Color.primary.opacity(0.06)
+                                )
+                        }
+                    }
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 // MARK: - Track Grid Item
 
 struct TrackGridItem: View {
     let track: Track
     let isSelected: Bool
+    var isNowPlaying: Bool = false
     var onTap: () -> Void = {}
     var onDoubleTap: () -> Void = {}
 
     @State private var isHovered = false
 
+    private var thumbnailView: some View {
+        let colors = track.gradientColors
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                .fill(
+                    LinearGradient(
+                        colors: [colors.0, colors.1],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .aspectRatio(4.0 / 3.0, contentMode: .fit)
+
+            if isNowPlaying && !isHovered {
+                // Now-playing equalizer indicator
+                NowPlayingIndicator()
+            } else {
+                Image(systemName: "waveform")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+
+            // Play overlay on hover
+            if isHovered {
+                RoundedRectangle(cornerRadius: Spacing.radiusMd)
+                    .fill(Color.black.opacity(0.3))
+
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+
+            // Badges
+            VStack {
+                HStack {
+                    if track.isCover {
+                        Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white)
+                            .padding(Spacing.sm)
+                    } else if track.isExtended {
+                        Image(systemName: "arrow.forward.to.line.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white)
+                            .padding(Spacing.sm)
+                    }
+
+                    Spacer()
+
+                    if track.isFavorite {
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white)
+                            .padding(Spacing.sm)
+                    }
+                }
+                Spacer()
+                HStack {
+                    // Now-playing badge bottom-left
+                    if isNowPlaying {
+                        HStack(spacing: 3) {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.system(size: 8))
+                            Text("Playing")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(DesignSystem.Colors.accent.opacity(0.8))
+                        )
+                        .padding(Spacing.sm)
+                    }
+
+                    Spacer()
+                    // Glass-style duration pill
+                    Text(track.duration.displayName)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Color.white.opacity(0.15))
+                        )
+                        .padding(Spacing.sm)
+                }
+            }
+        }
+    }
+
     var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: Spacing.sm) {
-                // Thumbnail
-                ZStack {
-                    RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                        .fill(Theme.accentGradient)
-                        .aspectRatio(1, contentMode: .fit)
-
-                    Image(systemName: "waveform")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.white.opacity(0.8))
-
-                    // Play overlay on hover
-                    if isHovered {
-                        RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                            .fill(Color.black.opacity(0.3))
-
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 44))
-                            .foregroundStyle(.white)
-                    }
-
-                    // Badges
-                    VStack {
-                        HStack {
-                            if track.isCover {
-                                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(.white)
-                                    .padding(Spacing.sm)
-                            }
-
-                            Spacer()
-
-                            if track.isFavorite {
-                                Image(systemName: "heart.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(.white)
-                                    .padding(Spacing.sm)
-                            }
-                        }
-                        Spacer()
-                    }
-                }
+                thumbnailView
 
                 // Info
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.displayTitle)
-                        .font(Typography.bodyMedium)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
-                        .lineLimit(1)
+                        .lineLimit(2)
 
-                    Text(track.duration.displayName)
-                        .font(Typography.caption)
+                    Text(track.prompt)
+                        .font(.system(size: 11))
                         .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
                 }
+                .padding(.horizontal, Spacing.xs)
+                .padding(.bottom, Spacing.xs)
             }
-            .padding(Spacing.sm)
             .background(
                 RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                    .fill(isSelected ? Theme.accentPrimary.opacity(0.1) : (isHovered ? Theme.backgroundTertiary : Theme.backgroundSecondary))
+                    .fill(
+                        isNowPlaying
+                            ? Theme.accentPrimary.opacity(0.1)
+                            : (isSelected ? Theme.accentPrimary.opacity(0.08) : Color.clear)
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: Spacing.radiusMd)
-                    .strokeBorder(isSelected ? Theme.accentPrimary : Color.clear, lineWidth: 2)
+                    .strokeBorder(
+                        isNowPlaying
+                            ? Theme.accentPrimary.opacity(0.6)
+                            : (isSelected ? Theme.accentPrimary : Color.clear),
+                        lineWidth: isNowPlaying ? 2 : 1.5
+                    )
             )
+            .scaleEffect(isHovered ? 1.02 : 1)
+            .brightness(isHovered ? 0.05 : 0)
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -303,12 +727,9 @@ struct TrackGridItem: View {
                 isHovered = hovering
             }
         }
-        .onTapGesture(count: 2) {
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
             onDoubleTap()
-        }
-        .onTapGesture {
-            onTap()
-        }
+        })
     }
 }
 
@@ -317,31 +738,44 @@ struct TrackGridItem: View {
 struct DarkTrackRow: View {
     let track: Track
     let isSelected: Bool
+    var isNowPlaying: Bool = false
     var onTap: () -> Void = {}
     var onDoubleTap: () -> Void = {}
 
     @State private var isHovered = false
 
     var body: some View {
+        let colors = track.gradientColors
+
         Button(action: onTap) {
             HStack(spacing: Spacing.md) {
-                // Thumbnail
+                // Thumbnail with curated gradient
                 ZStack {
-                    RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                        .fill(Theme.accentGradient)
-                        .frame(width: 48, height: 48)
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(
+                            LinearGradient(
+                                colors: [colors.0, colors.1],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 40, height: 40)
 
-                    Image(systemName: "waveform")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.white)
+                    if isNowPlaying && !isHovered {
+                        NowPlayingIndicator(barCount: 3, barWidth: 3, height: 16)
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
 
                     if isHovered {
-                        RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                            .fill(Color.black.opacity(0.3))
-                            .frame(width: 48, height: 48)
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.black.opacity(0.35))
+                            .frame(width: 40, height: 40)
 
                         Image(systemName: "play.fill")
-                            .font(.system(size: 16))
+                            .font(.system(size: 14))
                             .foregroundStyle(.white)
                     }
                 }
@@ -351,11 +785,15 @@ struct DarkTrackRow: View {
                     HStack(spacing: Spacing.sm) {
                         Text(track.displayTitle)
                             .font(Typography.bodyMedium)
-                            .foregroundStyle(Theme.textPrimary)
+                            .foregroundStyle(isNowPlaying ? Theme.accentPrimary : Theme.textPrimary)
                             .lineLimit(1)
 
                         if track.isCover {
                             Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.accentPrimary)
+                        } else if track.isExtended {
+                            Image(systemName: "arrow.forward.to.line.circle.fill")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.accentPrimary)
                         }
@@ -384,17 +822,28 @@ struct DarkTrackRow: View {
                 Text(track.formattedDate)
                     .font(Typography.caption)
                     .foregroundStyle(Theme.textTertiary)
-                    .frame(width: 100, alignment: .trailing)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: 170, alignment: .trailing)
             }
             .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm)
+            .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                    .fill(isSelected ? Theme.accentPrimary.opacity(0.1) : (isHovered ? Theme.backgroundTertiary : Color.clear))
+                    .fill(
+                        isNowPlaying
+                            ? Theme.accentPrimary.opacity(0.08)
+                            : (isSelected ? Theme.accentPrimary.opacity(0.1) : (isHovered ? Theme.backgroundTertiary : Color.clear))
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                    .strokeBorder(isSelected ? Theme.accentPrimary.opacity(0.5) : Color.clear, lineWidth: 1)
+                    .strokeBorder(
+                        isNowPlaying
+                            ? Theme.accentPrimary.opacity(0.4)
+                            : (isSelected ? Theme.accentPrimary.opacity(0.5) : Color.clear),
+                        lineWidth: 1
+                    )
             )
         }
         .buttonStyle(.plain)
@@ -403,12 +852,9 @@ struct DarkTrackRow: View {
                 isHovered = hovering
             }
         }
-        .onTapGesture(count: 2) {
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
             onDoubleTap()
-        }
-        .onTapGesture {
-            onTap()
-        }
+        })
     }
 }
 
@@ -417,20 +863,54 @@ struct DarkTrackRow: View {
 struct FavoritesView: View {
     @EnvironmentObject var appState: AppState
     @State private var localSelection: Track?
+    @State private var showDetail = false
+    @State private var playbackIsPlaying = false
 
     var favorites: [Track] {
         appState.tracks.filter { $0.isFavorite }
     }
 
+    private var selectedFavoriteTrack: Track? {
+        guard let id = localSelection?.id else { return nil }
+        return favorites.first(where: { $0.id == id })
+    }
+
     var body: some View {
+        Group {
+            if showDetail, let selected = selectedFavoriteTrack {
+                TrackDetailPanel(track: selected) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showDetail = false
+                    }
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                favoritesList
+            }
+        }
+        .background(Theme.background)
+        .onChange(of: favorites.map(\.id)) {
+            guard let selected = localSelection else { return }
+            guard !favorites.contains(where: { $0.id == selected.id }) else { return }
+            localSelection = nil
+            showDetail = false
+        }
+        .onAppear {
+            playbackIsPlaying = appState.audioPlayer.isPlaying
+        }
+        .onReceive(appState.audioPlayer.$isPlaying) { isPlaying in
+            playbackIsPlaying = isPlaying
+        }
+    }
+
+    private var favoritesList: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text("Favorites")
                         .title1Text()
 
-                    Text("\(favorites.count) tracks")
+                    Text("\(favorites.count) \(favorites.count == 1 ? "track" : "tracks")")
                         .font(Typography.caption)
                         .foregroundStyle(Theme.textTertiary)
                 }
@@ -441,45 +921,65 @@ struct FavoritesView: View {
             .padding(.vertical, Spacing.md)
             .background(Theme.backgroundSecondary)
 
-            // Content
             if favorites.isEmpty {
                 emptyFavoritesState
             } else {
                 ScrollView {
                     VStack(spacing: Spacing.xs) {
                         ForEach(favorites) { track in
-                            DarkTrackRow(
-                                track: track,
-                                isSelected: localSelection?.id == track.id,
-                                onTap: {
-                                    localSelection = track
-                                    appState.selectedTrack = track
-                                },
-                                onDoubleTap: {
-                                    appState.playTrack(track)
-                                }
-                            )
-                            .contextMenu {
-                                Button {
-                                    appState.toggleFavorite(track)
-                                } label: {
-                                    Label("Remove from Favorites", systemImage: "heart.slash")
+                            HStack(spacing: Spacing.sm) {
+                                DarkTrackRow(
+                                    track: track,
+                                    isSelected: localSelection?.id == track.id,
+                                    isNowPlaying: playbackIsPlaying && appState.audioPlayer.isCurrentTrack(track.audioURL),
+                                    onTap: {
+                                        localSelection = track
+                                        appState.selectedTrack = track
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            showDetail = true
+                                        }
+                                    },
+                                    onDoubleTap: {
+                                        appState.playTrack(track)
+                                    }
+                                )
+                                .contextMenu {
+                                    Button {
+                                        appState.toggleFavorite(track)
+                                    } label: {
+                                        Label("Remove from Favorites", systemImage: "heart.slash")
+                                    }
+
+                                    Button {
+                                        appState.selectedTrack = track
+                                        appState.showExport = true
+                                    } label: {
+                                        Label("Export...", systemImage: "square.and.arrow.up")
+                                    }
+
+                                    Divider()
+
+                                    Button(role: .destructive) {
+                                        appState.deleteTrack(track)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
 
                                 Button {
-                                    appState.selectedTrack = track
-                                    appState.showExport = true
+                                    togglePlay(for: track)
                                 } label: {
-                                    Label("Export...", systemImage: "square.and.arrow.up")
+                                    Image(systemName: playIcon(for: track))
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(Theme.textPrimary)
+                                        .frame(width: 32, height: 32)
+                                        .background(
+                                            Circle()
+                                                .fill(Theme.backgroundTertiary)
+                                        )
                                 }
-
-                                Divider()
-
-                                Button(role: .destructive) {
-                                    appState.deleteTrack(track)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
+                                .buttonStyle(.plain)
+                                .help(playHelpText(for: track))
                             }
                         }
                     }
@@ -488,7 +988,6 @@ struct FavoritesView: View {
                 }
             }
         }
-        .background(Theme.background)
     }
 
     private var emptyFavoritesState: some View {
@@ -517,6 +1016,63 @@ struct FavoritesView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func playIcon(for track: Track) -> String {
+        let isCurrent = appState.audioPlayer.isCurrentTrack(track.audioURL)
+        return isCurrent && playbackIsPlaying ? "pause.fill" : "play.fill"
+    }
+
+    private func playHelpText(for track: Track) -> String {
+        let isCurrent = appState.audioPlayer.isCurrentTrack(track.audioURL)
+        return isCurrent && playbackIsPlaying ? "Pause track" : "Play track"
+    }
+
+    private func togglePlay(for track: Track) {
+        if appState.audioPlayer.isCurrentTrack(track.audioURL) {
+            appState.togglePlayPause()
+        } else {
+            appState.playTrack(track)
+        }
+        playbackIsPlaying = appState.audioPlayer.isPlaying
+    }
+}
+
+// MARK: - Now Playing Indicator (animated equalizer bars)
+
+struct NowPlayingIndicator: View {
+    var barCount: Int = 4
+    var barWidth: CGFloat = 3
+    var height: CGFloat = 20
+    var color: Color = .white
+
+    @State private var animating = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { index in
+                RoundedRectangle(cornerRadius: barWidth / 2)
+                    .fill(color)
+                    .frame(width: barWidth, height: animating ? barHeight(for: index) : height * 0.3)
+                    .animation(
+                        .easeInOut(duration: barDuration(for: index))
+                            .repeatForever(autoreverses: true),
+                        value: animating
+                    )
+            }
+        }
+        .frame(height: height)
+        .onAppear { animating = true }
+    }
+
+    private func barHeight(for index: Int) -> CGFloat {
+        let heights: [CGFloat] = [0.9, 0.6, 1.0, 0.7]
+        return height * heights[index % heights.count]
+    }
+
+    private func barDuration(for index: Int) -> Double {
+        let durations: [Double] = [0.45, 0.55, 0.35, 0.5]
+        return durations[index % durations.count]
     }
 }
 
