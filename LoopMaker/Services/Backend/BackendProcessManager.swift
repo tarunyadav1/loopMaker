@@ -134,6 +134,17 @@ public final class BackendProcessManager: ObservableObject {
         venvURL.appendingPathComponent(".setup-complete")
     }
 
+    /// True when we are using the app-managed venv under Application Support.
+    /// If a developer has a source-tree venv, we treat it as developer-managed.
+    private var isUsingManagedVenv: Bool {
+        activeVenvURL.standardizedFileURL.path == venvURL.standardizedFileURL.path
+    }
+
+    /// Setup sentinel for the active venv (only written/required for managed venvs).
+    private var activeSetupCompleteURL: URL {
+        activeVenvURL.appendingPathComponent(".setup-complete")
+    }
+
     /// In dev mode (debug build from source tree), resolve the source backend directory.
     /// Only compiled in DEBUG to avoid leaking the build machine path in release binaries.
     private var sourceBackendURL: URL? {
@@ -170,7 +181,8 @@ public final class BackendProcessManager: ObservableObject {
     }
 
     /// The single venv all methods should use.
-    /// Dev mode: source tree's `backend/.venv/` (must be pre-created by the developer).
+    /// Dev mode: prefer source tree's `backend/.venv/` when present; otherwise fall back to
+    /// the app-managed venv under Application Support (created on first launch).
     /// Prod mode: App Support's `.venv/` (created on first launch).
     /// This eliminates the split-brain where venv creation targeted App Support
     /// but launchBackend preferred the source tree's venv.
@@ -219,7 +231,8 @@ public final class BackendProcessManager: ObservableObject {
                 state = .running
                 startHealthMonitoring()
             } catch {
-                state = .error("Could not start backend: \(error.localizedDescription)")
+                logger.error("Bundled backend start failed: \(String(describing: error))")
+                state = .error(userFacingBackendStartErrorMessage(for: error))
             }
             return
         }
@@ -236,25 +249,24 @@ public final class BackendProcessManager: ObservableObject {
         // A venv directory without the sentinel file means pip install failed mid-way.
         state = .checkingVenv
         let venvExists = FileManager.default.fileExists(atPath: activeVenvURL.path)
-        let setupComplete = FileManager.default.fileExists(atPath: setupCompleteURL.path)
-        let needsSetup = !venvExists || (!setupComplete && !isDevMode)
+        let setupComplete = FileManager.default.fileExists(atPath: activeSetupCompleteURL.path)
+
+        // Only require the sentinel for the app-managed venv. For a developer-managed venv
+        // in the source tree, assume it's intentionally managed outside the app.
+        let needsSetup: Bool
+        if isUsingManagedVenv {
+            needsSetup = !venvExists || !setupComplete
+        } else {
+            needsSetup = !venvExists
+        }
         isFirstLaunch = needsSetup
 
         if needsSetup {
-            if isDevMode {
-                state = .error(
-                    "Dev mode: no venv found at backend/.venv/. "
-                    + "Run: cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
-                )
-                return
-            }
-
-            // Prod unbundled: first launch or broken venv recovery
             do {
                 // Remove any half-installed venv before starting fresh
-                if venvExists && !setupComplete {
+                if isUsingManagedVenv, venvExists, !setupComplete {
                     logger.warning("Found incomplete venv, removing for fresh install...")
-                    try? FileManager.default.removeItem(at: venvURL)
+                    try? FileManager.default.removeItem(at: activeVenvURL)
                 }
 
                 state = .creatingVenv
@@ -265,11 +277,14 @@ public final class BackendProcessManager: ObservableObject {
                 try await installDependencies()
 
                 // Write sentinel to mark successful setup
-                try "ok".write(to: setupCompleteURL, atomically: true, encoding: .utf8)
+                if isUsingManagedVenv {
+                    try "ok".write(to: activeSetupCompleteURL, atomically: true, encoding: .utf8)
+                }
 
                 setupProgress = 0.9
             } catch {
-                state = .error("Setup failed: \(error.localizedDescription)")
+                logger.error("Setup failed: \(String(describing: error))")
+                state = .error(userFacingSetupErrorMessage(for: error))
                 return
             }
         }
@@ -281,13 +296,16 @@ public final class BackendProcessManager: ObservableObject {
             try await launchBackend()
 
             state = .waitingForHealth
-            try await waitForHealthy()
+            // First launch (after pip install) can take longer due to heavy imports and first-run caches.
+            let healthTimeout: TimeInterval = needsSetup ? 90 : 30
+            try await waitForHealthy(timeout: healthTimeout)
 
             setupProgress = 1.0
             state = .running
             startHealthMonitoring()
         } catch {
-            state = .error("Could not start backend: \(error.localizedDescription)")
+            logger.error("Backend start failed: \(String(describing: error))")
+            state = .error(userFacingBackendStartErrorMessage(for: error))
         }
     }
 
@@ -338,8 +356,10 @@ public final class BackendProcessManager: ObservableObject {
         state = .notStarted
         setupProgress = 0
         // Remove broken venv so setup re-triggers
-        if !isDevMode && !isBundledMode {
+        if !isBundledMode {
+            // Never delete a developer-managed source-tree venv.
             try? FileManager.default.removeItem(at: venvURL)
+            try? FileManager.default.removeItem(at: setupCompleteURL)
         }
         await ensureBackendRunning()
     }
@@ -367,7 +387,8 @@ public final class BackendProcessManager: ObservableObject {
             state = .running
             startHealthMonitoring()
         } catch {
-            state = .error("Restart failed: \(error.localizedDescription)")
+            logger.error("Restart failed: \(String(describing: error))")
+            state = .error(userFacingBackendStartErrorMessage(for: error))
         }
     }
 
@@ -380,12 +401,53 @@ public final class BackendProcessManager: ObservableObject {
         crashRetryCount = 0
 
         // Remove venv and setup sentinel (prod mode only)
-        if !isDevMode && !isBundledMode {
+        if !isBundledMode {
+            // Never delete a developer-managed source-tree venv.
             try? FileManager.default.removeItem(at: venvURL)
             try? FileManager.default.removeItem(at: setupCompleteURL)
         }
 
         await ensureBackendRunning()
+    }
+
+    // MARK: - User-Facing Errors
+
+    private func userFacingSetupErrorMessage(for error: Error) -> String {
+        if let backendError = error as? BackendSetupError {
+            switch backendError {
+            case .pythonNotFound:
+                return "Python 3.11 is required to run the music engine."
+            case .backendFilesNotFound:
+                return "LoopMaker couldn't find the music engine files. Please reinstall the app."
+            case .dependencyInstallFailed:
+                return "LoopMaker couldn't install the music engine components. Please check your internet connection and try again."
+            case .venvCreationFailed:
+                return "LoopMaker couldn't set up the music engine on this Mac. Please try again."
+            case .portConflict:
+                return "LoopMaker couldn't start the music engine because ports 8000–8003 are in use. Please close other apps using those ports and retry."
+            default:
+                return backendError.errorDescription ?? "LoopMaker couldn't complete setup. Please try again."
+            }
+        }
+
+        return "LoopMaker couldn't complete setup. Please try again."
+    }
+
+    private func userFacingBackendStartErrorMessage(for error: Error) -> String {
+        if let backendError = error as? BackendSetupError {
+            switch backendError {
+            case .healthCheckTimeout:
+                return "The music engine took too long to start. Please retry."
+            case .backendStartFailed:
+                return "LoopMaker couldn't start the music engine. Please retry."
+            case .portConflict:
+                return "LoopMaker couldn't start the music engine because ports 8000–8003 are in use. Please close other apps using those ports and retry."
+            default:
+                return backendError.errorDescription ?? "LoopMaker couldn't start the music engine. Please retry."
+            }
+        }
+
+        return "LoopMaker couldn't start the music engine. Please retry."
     }
 
     /// The Application Support backend directory, exposed for cache cleanup.
@@ -464,8 +526,12 @@ public final class BackendProcessManager: ObservableObject {
             return bundled
         }
 
-        // Check common system locations
+        // Check common system locations. Prefer explicit python3.11 binaries first.
         let systemPaths = [
+            "/opt/homebrew/opt/python@3.11/bin/python3.11",
+            "/usr/local/opt/python@3.11/bin/python3.11",
+            "/opt/homebrew/bin/python3.11",
+            "/usr/local/bin/python3.11",
             "/usr/local/bin/python3",
             "/opt/homebrew/bin/python3",
             "/usr/bin/python3",
@@ -475,11 +541,22 @@ public final class BackendProcessManager: ObservableObject {
 
         for path in systemPaths {
             if FileManager.default.isExecutableFile(atPath: path) {
-                // Verify it's Python 3.9+
+                // Verify it's Python 3.11.x
                 if await verifyPythonVersion(at: URL(fileURLWithPath: path)) {
                     logger.info("Found system Python at: \(path)")
                     return URL(fileURLWithPath: path)
                 }
+            }
+        }
+
+        // Try `which python3.11` first (keg-only Homebrew installs may not symlink python3)
+        if let which311 = await runShellCommand("which python3.11"),
+           !which311.isEmpty {
+            let path = which311.trimmingCharacters(in: .whitespacesAndNewlines)
+            if FileManager.default.isExecutableFile(atPath: path),
+               await verifyPythonVersion(at: URL(fileURLWithPath: path)) {
+                logger.info("Found Python via which python3.11: \(path)")
+                return URL(fileURLWithPath: path)
             }
         }
 
@@ -517,8 +594,8 @@ public final class BackendProcessManager: ObservableObject {
             return false
         }
 
-        // Require Python 3.11+ (ACE-Step v1.5 requires ==3.11.*)
-        return major == 3 && minor >= 11
+        // Require Python 3.11.x exactly (ACE-Step v1.5 requires ==3.11.*)
+        return major == 3 && minor == 11
     }
 
     // MARK: - Venv Setup
@@ -686,6 +763,23 @@ public final class BackendProcessManager: ObservableObject {
             if let sitePackages = bundledSitePackagesURL {
                 env["PYTHONPATH"] = sitePackages.path
             }
+
+            // Python.org's framework build expects to be located under /Library/Frameworks.
+            // For a notarized bundled app we keep it inside Contents/Frameworks and pass
+            // DYLD search paths to the child process.
+            if let frameworksURL = Bundle.main.privateFrameworksURL {
+                env["DYLD_FRAMEWORK_PATH"] = frameworksURL.path
+
+                let pythonLibURL = frameworksURL
+                    .appendingPathComponent("Python.framework", isDirectory: true)
+                    .appendingPathComponent("Versions/3.11/lib", isDirectory: true)
+
+                if let existing = env["DYLD_LIBRARY_PATH"], !existing.isEmpty {
+                    env["DYLD_LIBRARY_PATH"] = "\(pythonLibURL.path):\(existing)"
+                } else {
+                    env["DYLD_LIBRARY_PATH"] = pythonLibURL.path
+                }
+            }
         } else {
             // Venv mode: use the venv's Python (which already knows its site-packages)
             pythonPath = activeVenvURL.appendingPathComponent("bin/python")
@@ -746,7 +840,8 @@ public final class BackendProcessManager: ObservableObject {
                 // Expected while server is starting
             }
 
-            try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            // Avoid hammering the socket while uvicorn is still importing heavy deps.
+            try await Task.sleep(for: .seconds(1))
         }
 
         throw BackendSetupError.healthCheckTimeout
@@ -780,7 +875,13 @@ public final class BackendProcessManager: ObservableObject {
 
     /// Save PID and port in format "pid:port" for orphan cleanup.
     private func savePid(_ pid: Int32) {
-        try? "\(pid):\(port)".write(to: pidFileURL, atomically: true, encoding: .utf8)
+        do {
+            // Ensure App Support backend directory exists in bundled mode too.
+            try FileManager.default.createDirectory(at: backendURL, withIntermediateDirectories: true)
+            try "\(pid):\(port)".write(to: pidFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            logger.warning("Failed to persist backend PID file: \(error.localizedDescription)")
+        }
     }
 
     /// Load PID and port from the pid file. Falls back to port 8000 for old-format files.

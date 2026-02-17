@@ -39,6 +39,10 @@ struct GenerationView: View {
     // Extend mode state
     @State private var selectedExtensionAmount: ExtensionAmount = .thirty
     @State private var sourceTrack: Track?
+    @State private var cachedExtendSourceDuration: Double?
+    @State private var extendDurationReadFailed = false
+    @State private var showTrackLibraryPicker = false
+    @State private var trackPickerQuery = ""
 
     // Runtime ETA estimation (adapts to machine speed)
     @State private var generationStartedAt: Date?
@@ -63,8 +67,12 @@ struct GenerationView: View {
             .padding(.horizontal, Spacing.xl)
             .padding(.vertical, Spacing.lg)
         }
+        .sheet(isPresented: $showTrackLibraryPicker) {
+            trackLibraryPickerSheet
+        }
         .onAppear {
             applyPrefillFromAppState()
+            refreshExtendSourceDuration()
             if appState.isGenerating && generationStartedAt == nil {
                 handleGenerationStateChange(isGenerating: true)
             }
@@ -80,6 +88,16 @@ struct GenerationView: View {
         }
         .onChange(of: taskType) {
             refreshSuggestions()
+            refreshExtendSourceDuration()
+            normalizeExtensionSelection()
+        }
+        .onChange(of: sourceTrack) {
+            refreshExtendSourceDuration()
+            normalizeExtensionSelection()
+        }
+        .onChange(of: sourceAudioURL) {
+            refreshExtendSourceDuration()
+            normalizeExtensionSelection()
         }
     }
 
@@ -133,6 +151,25 @@ struct GenerationView: View {
                             .font(Typography.caption2)
                             .foregroundStyle(DesignSystem.Colors.textMuted)
                     }
+                }
+
+                if shouldShowLanguageDetection {
+                    HStack(spacing: 6) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(languageDetectionColor)
+
+                        Text(languageDetectionText)
+                            .font(Typography.caption2)
+                            .foregroundStyle(languageDetectionColor)
+                    }
+                    .padding(.horizontal, Spacing.xs + 2)
+                    .padding(.vertical, Spacing.xxs + 1)
+                    .background(
+                        Capsule()
+                            .fill(languageDetectionColor.opacity(0.14))
+                    )
+                    .help("Language is inferred from your lyrics first, then prompt keywords.")
                 }
 
                 TextEditor(text: $prompt)
@@ -189,7 +226,12 @@ struct GenerationView: View {
                                 ExtensionAmountChip(
                                     amount: amount,
                                     isSelected: selectedExtensionAmount == amount,
-                                    action: { selectedExtensionAmount = amount }
+                                    isDisabled: !isExtensionAmountAllowed(amount),
+                                    action: {
+                                        if isExtensionAmountAllowed(amount) {
+                                            selectedExtensionAmount = amount
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -239,11 +281,44 @@ struct GenerationView: View {
                     advancedOptions
                 }
 
+                if taskType == .extend, !hasValidExtensionSelection {
+                    Text("Selected extension exceeds the \(appState.selectedModel.maxDurationSeconds)s engine limit.")
+                        .font(Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if taskType == .extend,
+                   sourceAudioURL != nil,
+                   sourceTrack == nil,
+                   cachedExtendSourceDuration == nil,
+                   !extendDurationReadFailed {
+                    Text("Reading source audio duration…")
+                        .font(Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textMuted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if taskType == .extend, extendDurationReadFailed {
+                    Text("Could not read source audio duration. Choose a different file.")
+                        .font(Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 // Lyrics section
                 if taskType == .cover && coverVocalsMode == .newLyrics {
                     lyricsSection
                 } else if (taskType == .text2music || taskType == .extend) && !isInstrumental {
                     lyricsSection
+                }
+
+                if !appState.backendConnected {
+                    backendConnectionBanner
+                }
+
+                if let status = generationFeedbackStatus {
+                    generationStatusBanner(status)
                 }
 
                 // Create button
@@ -491,8 +566,7 @@ struct GenerationView: View {
                             HStack(spacing: Spacing.sm) {
                                 ForEach(appState.tracks.prefix(10)) { track in
                                     Button {
-                                        sourceTrack = track
-                                        sourceAudioURL = track.audioURL
+                                        selectTrackForExtend(track)
                                     } label: {
                                         HStack(spacing: 6) {
                                             Image(systemName: "music.note")
@@ -515,27 +589,105 @@ struct GenerationView: View {
                         }
                     }
 
-                    Button {
-                        browseAudio(for: .extend)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder")
-                                .font(.system(size: 11))
-                            Text("Browse audio file")
-                                .font(Typography.captionMedium)
+                    HStack(spacing: Spacing.sm) {
+                        if !appState.tracks.isEmpty {
+                            Button {
+                                trackPickerQuery = ""
+                                showTrackLibraryPicker = true
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "music.note.list")
+                                        .font(.system(size: 11))
+                                    Text("Choose from library")
+                                        .font(Typography.captionMedium)
+                                }
+                                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.primary.opacity(0.06))
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .foregroundStyle(DesignSystem.Colors.textSecondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(Color.primary.opacity(0.06))
-                        )
+
+                        Button {
+                            browseAudio(for: .extend)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 11))
+                                Text("Browse audio file")
+                                    .font(Typography.captionMedium)
+                            }
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.06))
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
+    }
+
+    private var trackLibraryPickerSheet: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            HStack {
+                Text("Choose a track to extend")
+                    .font(Typography.title3)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+
+                Spacer()
+
+                Button("Done") {
+                    showTrackLibraryPicker = false
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignSystem.Colors.accent)
+            }
+
+            TextField("Search tracks", text: $trackPickerQuery)
+                .textFieldStyle(.roundedBorder)
+
+            if filteredTracksForExtendPicker.isEmpty {
+                Text("No tracks match your search.")
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textMuted)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                List(filteredTracksForExtendPicker) { track in
+                    Button {
+                        selectTrackForExtend(track)
+                        showTrackLibraryPicker = false
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(track.displayTitle)
+                                    .font(Typography.bodyMedium)
+                                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                                Text(track.formattedDate)
+                                    .font(Typography.caption)
+                                    .foregroundStyle(DesignSystem.Colors.textMuted)
+                            }
+                            Spacer()
+                            Text(track.duration.displayName)
+                                .font(Typography.caption)
+                                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(Spacing.lg)
+        .frame(minWidth: 520, minHeight: 420)
     }
 
     // MARK: - Cover Vocals Pills
@@ -568,7 +720,7 @@ struct GenerationView: View {
                                 selectedGenreCard = genre
                             }
                             if let preset = GenrePreset.allPresets.first(where: { $0.name == genre.name }) {
-                                prompt = preset.promptSuffix
+                                applyGenrePresetPromptSuffix(preset.promptSuffix)
                             }
                         } label: {
                             HStack(spacing: 6) {
@@ -864,6 +1016,41 @@ struct GenerationView: View {
         !modelState.isDownloaded && !modelState.isDownloading
     }
 
+    private var backendConnectionBanner: some View {
+        HStack(spacing: Spacing.sm) {
+            if appState.backendManager.state.isSetupPhase {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .scaleEffect(0.6)
+                    .frame(width: 13, height: 13)
+
+                Text(UIRedaction.redactModelNames(in: appState.backendManager.state.userMessage))
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                Spacer()
+            } else {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignSystem.Colors.warning)
+
+                Text(UIRedaction.redactModelNames(in: appState.backendError ?? "Music engine is offline."))
+                    .font(Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                Button("Retry") {
+                    Task { await appState.restartBackend() }
+                }
+                .font(Typography.captionMedium)
+                .foregroundStyle(DesignSystem.Colors.accent)
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     private var generateButton: some View {
         VStack(spacing: Spacing.sm) {
             if modelState.isDownloading {
@@ -920,7 +1107,7 @@ struct GenerationView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.orange)
 
-            Text("Required model files are missing. Download once, then click Create.")
+            Text("First time only: LoopMaker will download music engine files (\(appState.selectedModel.sizeFormatted)). This can take 10-30 minutes.")
                 .font(Typography.caption)
                 .foregroundStyle(.secondary)
 
@@ -936,7 +1123,7 @@ struct GenerationView: View {
                     .scaleEffect(0.6)
                     .frame(width: 13, height: 13)
 
-                Text("Downloading…")
+                Text("Preparing music engine…")
                     .font(Typography.caption)
                     .foregroundStyle(.secondary)
 
@@ -959,6 +1146,18 @@ struct GenerationView: View {
                 }
             }
             .frame(height: 4)
+
+            if let message = appState.modelDownloadMessages[appState.selectedModel], !message.isEmpty {
+                Text(UIRedaction.redactModelNames(in: message))
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textMuted)
+                    .lineLimit(2)
+            } else {
+                Text("This download happens once. Keep LoopMaker open while it finishes.")
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textMuted)
+                    .lineLimit(2)
+            }
         }
     }
 
@@ -968,7 +1167,7 @@ struct GenerationView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.red)
 
-            Text("Download failed: \(message)")
+            Text(UIRedaction.redactModelNames(in: message))
                 .font(Typography.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -976,7 +1175,7 @@ struct GenerationView: View {
             Spacer()
 
             Button("Retry") {
-                appState.downloadModel(appState.selectedModel)
+                generate()
             }
             .font(Typography.caption)
             .foregroundStyle(DesignSystem.Colors.accent)
@@ -1036,6 +1235,14 @@ struct GenerationView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            if !appState.generationStatus.isEmpty {
+                Text(appState.generationStatus)
+                    .font(Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(2)
+            }
         }
         .padding(Spacing.md)
         .background(
@@ -1081,6 +1288,81 @@ struct GenerationView: View {
                 isInstrumental = false
             }
         }
+    }
+
+    private func applyGenrePresetPromptSuffix(_ suffix: String) {
+        let trimmedSuffix = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSuffix.isEmpty else { return }
+
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            prompt = trimmedSuffix
+            return
+        }
+
+        if trimmedPrompt.localizedCaseInsensitiveContains(trimmedSuffix) {
+            return
+        }
+
+        let separator = (trimmedPrompt.hasSuffix(",")
+            || trimmedPrompt.hasSuffix(".")
+            || trimmedPrompt.hasSuffix(";")) ? " " : ", "
+        prompt = "\(trimmedPrompt)\(separator)\(trimmedSuffix)"
+    }
+
+    private var generationFeedbackStatus: String? {
+        guard !appState.isGenerating else { return nil }
+        let status = appState.generationStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !status.isEmpty else { return nil }
+        return status
+    }
+
+    private func generationStatusBanner(_ status: String) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: generationStatusIcon(for: status))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(generationStatusColor(for: status))
+            Text(status)
+                .font(Typography.caption)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                .lineLimit(2)
+            Spacer()
+        }
+        .padding(Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                .fill(generationStatusColor(for: status).opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                .strokeBorder(generationStatusColor(for: status).opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private func generationStatusIcon(for status: String) -> String {
+        if status.hasPrefix("Error:") {
+            return "exclamationmark.triangle.fill"
+        }
+        if status == "Cancelled" {
+            return "xmark.circle.fill"
+        }
+        if status.hasPrefix("Complete") {
+            return "checkmark.circle.fill"
+        }
+        return "info.circle.fill"
+    }
+
+    private func generationStatusColor(for status: String) -> Color {
+        if status.hasPrefix("Error:") {
+            return DesignSystem.Colors.error
+        }
+        if status == "Cancelled" {
+            return DesignSystem.Colors.warning
+        }
+        if status.hasPrefix("Complete") {
+            return DesignSystem.Colors.success
+        }
+        return DesignSystem.Colors.textSecondary
     }
 
     // MARK: - Helpers
@@ -1221,20 +1503,46 @@ struct GenerationView: View {
         }
 
         appState.prefillRequest = nil
+        refreshExtendSourceDuration()
+    }
+
+    private var hasPrompt: Bool {
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasRequiredSourceForTask: Bool {
+        taskType == .text2music || sourceAudioURL != nil
+    }
+
+    private var hasReadableExtendDuration: Bool {
+        taskType != .extend || extendSourceDuration != nil
     }
 
     private var canGenerate: Bool {
-        let hasPrompt = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasSource = taskType == .text2music || sourceAudioURL != nil
-        let hasExtendSource = taskType != .extend || extendSourceDuration != nil
-        return hasPrompt && hasSource && hasExtendSource && appState.canGenerate
+        hasPrompt && hasRequiredSourceForTask && hasReadableExtendDuration && hasValidExtensionSelection && appState.canGenerate
+    }
+
+    private var hasValidExtensionSelection: Bool {
+        taskType != .extend || isExtensionAmountAllowed(selectedExtensionAmount)
+    }
+
+    private func isExtensionAmountAllowed(_ amount: ExtensionAmount) -> Bool {
+        guard taskType == .extend else { return true }
+        guard let sourceDuration = extendSourceDuration else { return true }
+        let targetDuration = sourceDuration + Double(amount.seconds)
+        return targetDuration <= Double(appState.selectedModel.maxDurationSeconds)
     }
 
     /// Whether the button should be interactive — either for generating or downloading.
     private var canGenerateOrDownload: Bool {
         if canGenerate { return true }
-        // Allow model download without a prompt — download is a prerequisite that takes time
-        if needsModelDownload && appState.backendConnected && !appState.isGenerating {
+        if needsModelDownload &&
+            hasPrompt &&
+            hasRequiredSourceForTask &&
+            hasReadableExtendDuration &&
+            hasValidExtensionSelection &&
+            appState.backendConnected &&
+            !appState.isGenerating {
             return true
         }
         return false
@@ -1246,10 +1554,7 @@ struct GenerationView: View {
         }
         if modelState.isDownloading {
             let progress = modelState.progress ?? 0
-            return "Downloading… \(Int(progress * 100))%"
-        }
-        if needsModelDownload {
-            return "Download Model"
+            return "Preparing… \(Int(progress * 100))%"
         }
         switch taskType {
         case .cover: return "Create Cover"
@@ -1259,11 +1564,7 @@ struct GenerationView: View {
     }
 
     private func generateButtonAction() {
-        if needsModelDownload {
-            appState.downloadModel(appState.selectedModel)
-        } else {
-            generate()
-        }
+        generate()
     }
 
     private var promptPlaceholder: String {
@@ -1277,21 +1578,51 @@ struct GenerationView: View {
         }
     }
 
-    private func generate() {
-        let effectiveLyrics: String?
-
+    private var effectiveLyricsForCurrentState: String? {
         if taskType == .cover {
             switch coverVocalsMode {
             case .keep:
-                effectiveLyrics = ""  // Empty string preserves source vocals
+                return ""  // Empty string preserves source vocals
             case .instrumental:
-                effectiveLyrics = "[inst]"  // Explicitly request instrumental
+                return "[inst]"  // Explicitly request instrumental
             case .newLyrics:
-                effectiveLyrics = lyrics.isEmpty ? nil : lyrics
+                return lyrics.isEmpty ? nil : lyrics
             }
-        } else {
-            effectiveLyrics = isInstrumental ? nil : (lyrics.isEmpty ? nil : lyrics)
         }
+        return isInstrumental ? nil : (lyrics.isEmpty ? nil : lyrics)
+    }
+
+    private var shouldShowLanguageDetection: Bool {
+        if taskType == .cover {
+            return coverVocalsMode == .newLyrics
+        }
+        return !isInstrumental
+    }
+
+    private var detectedVocalLanguageHint: VocalLanguageHint? {
+        let request = GenerationRequest(
+            prompt: prompt,
+            duration: selectedDuration,
+            model: appState.selectedModel,
+            lyrics: effectiveLyricsForCurrentState,
+            taskType: taskType
+        )
+        return request.languageHint
+    }
+
+    private var languageDetectionText: String {
+        if let detectedVocalLanguageHint {
+            return "Detected language: \(detectedVocalLanguageHint.displayName)"
+        }
+        return "Detected language: Unknown"
+    }
+
+    private var languageDetectionColor: Color {
+        detectedVocalLanguageHint == nil ? DesignSystem.Colors.warning : DesignSystem.Colors.accent
+    }
+
+    private func generate() {
+        let effectiveLyrics = effectiveLyricsForCurrentState
 
         // Calculate repaint parameters for extend mode
         var repaintingStart: Double?
@@ -1301,8 +1632,14 @@ struct GenerationView: View {
                 appState.generationStatus = "Error: Could not read source audio duration."
                 return
             }
+            let targetDuration = sourceDuration + Double(selectedExtensionAmount.seconds)
+            guard targetDuration <= Double(appState.selectedModel.maxDurationSeconds) else {
+                appState.generationStatus =
+                    "Error: Extension exceeds the \(appState.selectedModel.maxDurationSeconds)s engine limit."
+                return
+            }
             repaintingStart = max(0, sourceDuration - 5.0)  // 5s overlap for seamless transition
-            repaintingEnd = sourceDuration + Double(selectedExtensionAmount.seconds)
+            repaintingEnd = targetDuration
         }
 
         // Parse seed from text field
@@ -1328,7 +1665,7 @@ struct GenerationView: View {
             musicKey: selectedKey,
             timeSignature: selectedTimeSignature
         )
-        appState.startGeneration(request: request)
+        appState.startGenerationEnsuringModel(request: request)
 
         // Clear seed if not locked
         if !lockSeed {
@@ -1338,16 +1675,56 @@ struct GenerationView: View {
 
     // MARK: - Audio File Handling
 
-    private var extendSourceDuration: Double? {
-        if let track = sourceTrack {
-            return track.durationSeconds
+    private var filteredTracksForExtendPicker: [Track] {
+        let query = trackPickerQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return appState.tracks }
+        return appState.tracks.filter { track in
+            track.displayTitle.localizedCaseInsensitiveContains(query)
+                || track.prompt.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func selectTrackForExtend(_ track: Track) {
+        sourceTrack = track
+        sourceAudioURL = track.audioURL
+    }
+
+    private func refreshExtendSourceDuration() {
+        guard taskType == .extend else {
+            cachedExtendSourceDuration = nil
+            extendDurationReadFailed = false
+            return
         }
 
-        guard let sourceAudioURL else { return nil }
-        guard let player = try? AVAudioPlayer(contentsOf: sourceAudioURL) else { return nil }
+        if let track = sourceTrack {
+            cachedExtendSourceDuration = track.durationSeconds
+            extendDurationReadFailed = false
+            return
+        }
+
+        guard let sourceAudioURL else {
+            cachedExtendSourceDuration = nil
+            extendDurationReadFailed = false
+            return
+        }
+
+        guard let player = try? AVAudioPlayer(contentsOf: sourceAudioURL) else {
+            cachedExtendSourceDuration = nil
+            extendDurationReadFailed = true
+            return
+        }
         let seconds = player.duration
-        guard seconds.isFinite, seconds > 0 else { return nil }
-        return seconds
+        guard seconds.isFinite, seconds > 0 else {
+            cachedExtendSourceDuration = nil
+            extendDurationReadFailed = true
+            return
+        }
+        cachedExtendSourceDuration = seconds
+        extendDurationReadFailed = false
+    }
+
+    private var extendSourceDuration: Double? {
+        cachedExtendSourceDuration
     }
 
     private func browseAudio(for taskOverride: GenerationTaskType? = nil) {
@@ -1380,6 +1757,14 @@ struct GenerationView: View {
             }
         }
         return true
+    }
+
+    private func normalizeExtensionSelection() {
+        guard taskType == .extend else { return }
+        guard !isExtensionAmountAllowed(selectedExtensionAmount) else { return }
+        if let fallback = ExtensionAmount.allCases.first(where: { isExtensionAmountAllowed($0) }) {
+            selectedExtensionAmount = fallback
+        }
     }
 }
 
@@ -1498,6 +1883,7 @@ struct DurationChip: View {
 struct ExtensionAmountChip: View {
     let amount: ExtensionAmount
     let isSelected: Bool
+    var isDisabled: Bool = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -1506,7 +1892,7 @@ struct ExtensionAmountChip: View {
         Button(action: action) {
             Text(amount.displayName)
                 .font(Typography.captionMedium)
-                .foregroundStyle(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
+                .foregroundStyle(foregroundColor)
                 .padding(.horizontal, Spacing.sm)
                 .padding(.vertical, Spacing.xs)
                 .background(
@@ -1515,12 +1901,21 @@ struct ExtensionAmountChip: View {
                 )
         }
         .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.03 : 1)
+        .scaleEffect(isHovered && !isDisabled ? 1.03 : 1)
+        .opacity(isDisabled ? 0.5 : 1)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.1)) {
                 isHovered = hovering
             }
         }
+        .disabled(isDisabled)
+    }
+
+    private var foregroundColor: Color {
+        if isDisabled {
+            return DesignSystem.Colors.textMuted
+        }
+        return isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary
     }
 }
 
@@ -1585,7 +1980,9 @@ struct LyricsTagButton: View {
     }
 }
 
+#if PREVIEWS
 #Preview {
     GenerationView()
         .environmentObject(AppState())
 }
+#endif

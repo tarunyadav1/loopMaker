@@ -68,6 +68,7 @@ struct SearchBar: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     ZStack {
         Theme.background.ignoresSafeArea()
@@ -81,3 +82,4 @@ struct SearchBar: View {
         .frame(width: 280)
     }
 }
+#endif

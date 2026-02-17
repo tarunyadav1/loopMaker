@@ -1,7 +1,7 @@
 /**
  * LoopMaker License Server
  *
- * Validates license keys with Gumroad API and manages activations.
+ * Validates Gumroad license keys and enforces one license per device.
  *
  * Endpoints:
  * - GET /health - Health check
@@ -16,11 +16,10 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// Gumroad product ID (use the API product ID, not the permalink)
-const GUMROAD_PRODUCT_ID = 'REPLACE_WITH_LOOPMAKER_PRODUCT_ID';
+const DEFAULT_PRODUCT_NAME = 'LoopMaker Pro';
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -71,10 +70,11 @@ export default {
  * Activate a license key
  */
 async function handleActivate(request, env) {
-  const body = await request.json();
-  const { license_key, machine_id } = body;
+  const body = await parseJsonBody(request);
+  const licenseKey = normalizeString(body?.license_key);
+  const machineId = normalizeString(body?.machine_id);
 
-  if (!license_key || !machine_id) {
+  if (!licenseKey || !machineId) {
     return jsonResponse({
       success: false,
       error: 'missing_params',
@@ -83,53 +83,56 @@ async function handleActivate(request, env) {
   }
 
   // Verify with Gumroad
-  const gumroadResult = await verifyWithGumroad(license_key);
+  const gumroadResult = await verifyWithGumroad(env, licenseKey);
 
   if (!gumroadResult.success) {
+    const isServerConfigIssue = gumroadResult.error === 'config_error';
+
     return jsonResponse({
       success: false,
-      error: 'invalid_license',
+      error: isServerConfigIssue ? 'server_error' : 'invalid_license',
       message: gumroadResult.message || 'Invalid license key. Please check your key and try again.'
-    }, 400);
+    }, isServerConfigIssue ? 500 : 400);
   }
 
-  // Check if already activated on different machine
-  const existingActivation = await env.LICENSE_KV.get(`license:${license_key}`, 'json');
+  const existingActivation = await env.LICENSE_KV.get(licenseStorageKey(licenseKey), 'json');
 
-  if (existingActivation && existingActivation.machine_id !== machine_id) {
-    // Check if we allow multiple activations (based on Gumroad variant)
-    const maxActivations = gumroadResult.quantity || 1;
-    const activations = await getActivationsForLicense(env, license_key);
+  // Strict one-license-per-device policy:
+  // once activated on machine A, activation on machine B is rejected.
+  if (existingActivation && existingActivation.machine_id !== machineId) {
+    return jsonResponse({
+      success: false,
+      error: 'already_activated',
+      message: 'This license is already activated on another device. Deactivate it there before activating here.'
+    }, 409);
+  }
 
-    if (activations.length >= maxActivations) {
-      return jsonResponse({
-        success: false,
-        error: 'already_activated',
-        message: `This license is already activated on another device. You can deactivate it from the original device or contact support.`
-      }, 400);
+  const activation = existingActivation && existingActivation.machine_id === machineId
+    ? {
+      ...existingActivation,
+      email: gumroadResult.email || existingActivation.email,
+      product_name: gumroadResult.product_name || existingActivation.product_name,
+      variants: gumroadResult.variants || existingActivation.variants
     }
-  }
+    : {
+      license_key: licenseKey,
+      machine_id: machineId,
+      activated_at: new Date().toISOString(),
+      email: gumroadResult.email,
+      product_name: gumroadResult.product_name,
+      variants: gumroadResult.variants
+    };
 
-  // Store activation
-  const activation = {
-    license_key,
-    machine_id,
-    activated_at: new Date().toISOString(),
-    email: gumroadResult.email,
-    product_name: gumroadResult.product_name,
-    variants: gumroadResult.variants
-  };
-
-  await env.LICENSE_KV.put(`license:${license_key}`, JSON.stringify(activation));
-  await env.LICENSE_KV.put(`machine:${machine_id}`, JSON.stringify({ license_key }));
+  await env.LICENSE_KV.put(licenseStorageKey(licenseKey), JSON.stringify(activation));
+  await env.LICENSE_KV.put(machineStorageKey(machineId), JSON.stringify({ license_key: licenseKey }));
 
   return jsonResponse({
     success: true,
-    message: 'License activated successfully',
+    message: existingActivation ? 'License already active on this device' : 'License activated successfully',
     activatedAt: activation.activated_at,
     licenseInfo: {
       email: gumroadResult.email,
-      productName: gumroadResult.product_name || 'LoopMaker Pro',
+      productName: gumroadResult.product_name || DEFAULT_PRODUCT_NAME,
       createdAt: gumroadResult.created_at,
       activatedAt: activation.activated_at,
       variants: gumroadResult.variants
@@ -141,10 +144,11 @@ async function handleActivate(request, env) {
  * Verify an existing license
  */
 async function handleVerify(request, env) {
-  const body = await request.json();
-  const { license_key, machine_id } = body;
+  const body = await parseJsonBody(request);
+  const licenseKey = normalizeString(body?.license_key);
+  const machineId = normalizeString(body?.machine_id);
 
-  if (!license_key || !machine_id) {
+  if (!licenseKey || !machineId) {
     return jsonResponse({
       success: false,
       error: 'missing_params',
@@ -153,7 +157,7 @@ async function handleVerify(request, env) {
   }
 
   // Check local activation first
-  const activation = await env.LICENSE_KV.get(`license:${license_key}`, 'json');
+  const activation = await env.LICENSE_KV.get(licenseStorageKey(licenseKey), 'json');
 
   if (!activation) {
     return jsonResponse({
@@ -163,7 +167,7 @@ async function handleVerify(request, env) {
     }, 400);
   }
 
-  if (activation.machine_id !== machine_id) {
+  if (activation.machine_id !== machineId) {
     return jsonResponse({
       success: false,
       error: 'wrong_machine',
@@ -172,12 +176,12 @@ async function handleVerify(request, env) {
   }
 
   // Verify with Gumroad (to check if license was refunded/revoked)
-  const gumroadResult = await verifyWithGumroad(license_key);
+  const gumroadResult = await verifyWithGumroad(env, licenseKey);
 
   if (!gumroadResult.success) {
     // License was revoked - clear activation
-    await env.LICENSE_KV.delete(`license:${license_key}`);
-    await env.LICENSE_KV.delete(`machine:${machine_id}`);
+    await env.LICENSE_KV.delete(licenseStorageKey(licenseKey));
+    await env.LICENSE_KV.delete(machineStorageKey(machineId));
 
     return jsonResponse({
       success: false,
@@ -192,7 +196,7 @@ async function handleVerify(request, env) {
     activatedAt: activation.activated_at,
     licenseInfo: {
       email: activation.email || gumroadResult.email,
-      productName: activation.product_name || 'LoopMaker Pro',
+      productName: activation.product_name || DEFAULT_PRODUCT_NAME,
       createdAt: gumroadResult.created_at,
       activatedAt: activation.activated_at,
       variants: activation.variants || gumroadResult.variants
@@ -204,10 +208,11 @@ async function handleVerify(request, env) {
  * Deactivate a license
  */
 async function handleDeactivate(request, env) {
-  const body = await request.json();
-  const { license_key, machine_id } = body;
+  const body = await parseJsonBody(request);
+  const licenseKey = normalizeString(body?.license_key);
+  const machineId = normalizeString(body?.machine_id);
 
-  if (!license_key || !machine_id) {
+  if (!licenseKey || !machineId) {
     return jsonResponse({
       success: false,
       error: 'missing_params',
@@ -216,7 +221,7 @@ async function handleDeactivate(request, env) {
   }
 
   // Check activation exists
-  const activation = await env.LICENSE_KV.get(`license:${license_key}`, 'json');
+  const activation = await env.LICENSE_KV.get(licenseStorageKey(licenseKey), 'json');
 
   if (!activation) {
     return jsonResponse({
@@ -226,7 +231,7 @@ async function handleDeactivate(request, env) {
     }, 400);
   }
 
-  if (activation.machine_id !== machine_id) {
+  if (activation.machine_id !== machineId) {
     return jsonResponse({
       success: false,
       error: 'wrong_machine',
@@ -235,8 +240,8 @@ async function handleDeactivate(request, env) {
   }
 
   // Remove activation
-  await env.LICENSE_KV.delete(`license:${license_key}`);
-  await env.LICENSE_KV.delete(`machine:${machine_id}`);
+  await env.LICENSE_KV.delete(licenseStorageKey(licenseKey));
+  await env.LICENSE_KV.delete(machineStorageKey(machineId));
 
   return jsonResponse({
     success: true,
@@ -247,7 +252,17 @@ async function handleDeactivate(request, env) {
 /**
  * Verify license with Gumroad API
  */
-async function verifyWithGumroad(licenseKey) {
+async function verifyWithGumroad(env, licenseKey) {
+  const productId = normalizeString(env.GUMROAD_PRODUCT_ID);
+
+  if (!productId) {
+    return {
+      success: false,
+      error: 'config_error',
+      message: 'License server is not configured. Missing GUMROAD_PRODUCT_ID.'
+    };
+  }
+
   try {
     const response = await fetch('https://api.gumroad.com/v2/licenses/verify', {
       method: 'POST',
@@ -255,7 +270,7 @@ async function verifyWithGumroad(licenseKey) {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: new URLSearchParams({
-        product_id: GUMROAD_PRODUCT_ID,
+        product_id: productId,
         license_key: licenseKey,
         increment_uses_count: 'false'
       })
@@ -263,21 +278,24 @@ async function verifyWithGumroad(licenseKey) {
 
     const data = await response.json();
 
-    if (data.success) {
+    if (data.success && !isRevokedPurchase(data.purchase)) {
       return {
         success: true,
         email: data.purchase?.email,
         product_name: data.purchase?.product_name,
         created_at: data.purchase?.created_at,
         variants: data.purchase?.variants,
-        quantity: data.purchase?.quantity || 1,
         refunded: data.purchase?.refunded || false,
-        chargebacked: data.purchase?.chargebacked || false
+        chargebacked: data.purchase?.chargebacked || false,
+        disputed: data.purchase?.disputed || false
       };
     } else {
       return {
         success: false,
-        message: data.message || 'Invalid license key'
+        error: isRevokedPurchase(data.purchase) ? 'license_revoked' : 'invalid_license',
+        message: isRevokedPurchase(data.purchase)
+          ? 'License has been refunded or revoked.'
+          : (data.message || 'Invalid license key')
       };
     }
   } catch (error) {
@@ -290,11 +308,34 @@ async function verifyWithGumroad(licenseKey) {
 }
 
 /**
- * Get all activations for a license (for multi-device support)
+ * Parse JSON safely. Returns null on invalid JSON.
  */
-async function getActivationsForLicense(env, licenseKey) {
-  const activation = await env.LICENSE_KV.get(`license:${licenseKey}`, 'json');
-  return activation ? [activation] : [];
+async function parseJsonBody(request) {
+  try {
+    return await request.json();
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeString(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim();
+}
+
+function isRevokedPurchase(purchase) {
+  return Boolean(purchase?.refunded || purchase?.chargebacked || purchase?.disputed);
+}
+
+function licenseStorageKey(licenseKey) {
+  return `license:${licenseKey}`;
+}
+
+function machineStorageKey(machineId) {
+  return `machine:${machineId}`;
 }
 
 /**

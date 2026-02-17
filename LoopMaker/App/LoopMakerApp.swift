@@ -15,6 +15,21 @@ struct LoopMakerApp: App {
                 .tint(DesignSystem.Colors.accent)
                 .onAppear {
                     DispatchQueue.main.async {
+                        // Set app icon from PNG
+                        let iconImage: NSImage? = {
+                            if let bundled = Bundle.main.url(forResource: "logo-loopmaker", withExtension: "png") {
+                                return NSImage(contentsOf: bundled)
+                            }
+                            let devPath = URL(fileURLWithPath: #filePath)
+                                .deletingLastPathComponent()
+                                .deletingLastPathComponent()
+                                .appendingPathComponent("Resources/logo-loopmaker.png")
+                            return NSImage(contentsOf: devPath)
+                        }()
+                        if let iconImage {
+                            NSApp.applicationIconImage = iconImage
+                        }
+
                         NSApp.setActivationPolicy(.regular)
                         NSApp.activate(ignoringOtherApps: true)
                         for window in NSApp.windows {

@@ -64,6 +64,21 @@ export default {
         return await handlePurgeCache(request, env);
       }
 
+      // Admin: Multipart upload - init
+      if (path === '/admin/upload/init' && request.method === 'POST') {
+        return await handleUploadInit(request, env);
+      }
+
+      // Admin: Multipart upload - part
+      if (path === '/admin/upload/part' && request.method === 'PUT') {
+        return await handleUploadPart(request, env);
+      }
+
+      // Admin: Multipart upload - complete
+      if (path === '/admin/upload/complete' && request.method === 'POST') {
+        return await handleUploadComplete(request, env);
+      }
+
       return jsonResponse({ error: 'Not found' }, 404);
 
     } catch (error) {
@@ -301,6 +316,73 @@ async function handlePurgeCache(request, env) {
   } catch (error) {
     return jsonResponse({ error: 'Failed to purge cache', details: error.message }, 500);
   }
+}
+
+/**
+ * Admin: Init multipart upload to R2
+ * POST /admin/upload/init { "filename": "LoopMaker-1.0.0.dmg" }
+ */
+async function handleUploadInit(request, env) {
+  const authHeader = request.headers.get('Authorization');
+  const adminSecret = env.ADMIN_SECRET;
+  if (!adminSecret || authHeader !== `Bearer ${adminSecret}`) {
+    return jsonResponse({ error: 'Unauthorized' }, 401);
+  }
+
+  const { filename } = await request.json();
+  if (!filename) return jsonResponse({ error: 'Missing filename' }, 400);
+
+  const multipart = await env.UPDATES_BUCKET.createMultipartUpload(filename);
+  return jsonResponse({ uploadId: multipart.uploadId, key: multipart.key });
+}
+
+/**
+ * Admin: Upload a single part
+ * PUT /admin/upload/part?uploadId=...&key=...&partNumber=...
+ * Body: raw binary chunk
+ */
+async function handleUploadPart(request, env) {
+  const authHeader = request.headers.get('Authorization');
+  const adminSecret = env.ADMIN_SECRET;
+  if (!adminSecret || authHeader !== `Bearer ${adminSecret}`) {
+    return jsonResponse({ error: 'Unauthorized' }, 401);
+  }
+
+  const url = new URL(request.url);
+  const uploadId = url.searchParams.get('uploadId');
+  const key = url.searchParams.get('key');
+  const partNumber = parseInt(url.searchParams.get('partNumber'));
+
+  if (!uploadId || !key || !partNumber) {
+    return jsonResponse({ error: 'Missing uploadId, key, or partNumber' }, 400);
+  }
+
+  const multipart = env.UPDATES_BUCKET.resumeMultipartUpload(key, uploadId);
+  const part = await multipart.uploadPart(partNumber, request.body);
+
+  return jsonResponse({ partNumber: part.partNumber, etag: part.etag });
+}
+
+/**
+ * Admin: Complete multipart upload
+ * POST /admin/upload/complete { "uploadId": "...", "key": "...", "parts": [...] }
+ */
+async function handleUploadComplete(request, env) {
+  const authHeader = request.headers.get('Authorization');
+  const adminSecret = env.ADMIN_SECRET;
+  if (!adminSecret || authHeader !== `Bearer ${adminSecret}`) {
+    return jsonResponse({ error: 'Unauthorized' }, 401);
+  }
+
+  const { uploadId, key, parts } = await request.json();
+  if (!uploadId || !key || !parts) {
+    return jsonResponse({ error: 'Missing uploadId, key, or parts' }, 400);
+  }
+
+  const multipart = env.UPDATES_BUCKET.resumeMultipartUpload(key, uploadId);
+  await multipart.complete(parts);
+
+  return jsonResponse({ success: true, message: `Upload complete: ${key}` });
 }
 
 /**

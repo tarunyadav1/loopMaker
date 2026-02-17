@@ -9,7 +9,7 @@ bucket_name = "loopmaker-updates"
 
 [[kv_namespaces]]
 binding = "APPCAST_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "d54b28cb9c224e8ba28d599673c0e8c7"
 
 [vars]
 ENVIRONMENT = "production"

@@ -103,6 +103,9 @@ htmlcov/
 *.aac
 !Resources/*.wav
 
+# Cloudflare Wrangler local state
+.wrangler/
+
 # AI/Agent tools
 .claude-flow/
 .claude/

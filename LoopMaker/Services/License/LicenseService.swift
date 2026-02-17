@@ -11,6 +11,7 @@ final class LicenseService: ObservableObject {
     // MARK: - Published Properties
     @Published private(set) var licenseState: LicenseState = .unknown
     @Published private(set) var isValidating = false
+    @Published private(set) var hasCompletedInitialCheck = false
 
     // MARK: - Configuration
     /// License server URL from Constants
@@ -138,6 +139,14 @@ final class LicenseService: ObservableObject {
             return
         }
 
+        // Enforce one-device binding locally as well.
+        if storedLicense.machineId != machineId {
+            clearLicense()
+            licenseState = .unlicensed
+            Log.app.warning("Local license machine binding mismatch - clearing stored license")
+            return
+        }
+
         // If we're offline but within grace period, allow
         do {
             isValidating = true
@@ -234,8 +243,22 @@ final class LicenseService: ObservableObject {
     // MARK: - Private Methods
 
     private func checkExistingLicense() async {
+        defer { hasCompletedInitialCheck = true }
+
         guard let storedLicense = loadLocalLicense() else {
             licenseState = .unlicensed
+            return
+        }
+
+        guard let machineId = machineId else {
+            licenseState = .unlicensed
+            return
+        }
+
+        if storedLicense.machineId != machineId {
+            clearLicense()
+            licenseState = .unlicensed
+            Log.app.warning("Stored license belongs to a different machine - clearing local license")
             return
         }
 

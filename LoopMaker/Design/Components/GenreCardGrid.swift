@@ -39,6 +39,7 @@ struct GenreCardGrid: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     ZStack {
         Theme.background.ignoresSafeArea()
@@ -50,3 +51,4 @@ struct GenreCardGrid: View {
         .padding()
     }
 }
+#endif

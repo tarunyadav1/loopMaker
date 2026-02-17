@@ -10,6 +10,16 @@ DESTINATION = platform=macOS
 
 # Distribution configuration
 SIGNING_IDENTITY ?= -
+
+# Code signing flags:
+# - Hardened runtime is required for notarization (Developer ID signing).
+# - For ad-hoc signing (SIGNING_IDENTITY="-"), hardened runtime causes dyld
+#   Library Validation failures when loading embedded frameworks like Sparkle.
+CODESIGN_RUNTIME_ARGS :=
+ifneq ($(SIGNING_IDENTITY),-)
+CODESIGN_RUNTIME_ARGS := --options runtime --timestamp
+endif
+
 PYTHON_VERSION = 3.11.8
 PYTHON_BUILD_DIR = build/python
 PYTHON_FRAMEWORK = $(PYTHON_BUILD_DIR)/Python.framework
@@ -25,9 +35,9 @@ YELLOW = \033[0;33m
 RED = \033[0;31m
 NC = \033[0m
 
-.PHONY: help setup bootstrap build build-release run clean reset open \
+.PHONY: help setup bootstrap setup-notarization build build-release run clean reset open \
         lint lint-fix format format-check quality test test-unit coverage \
-        archive notarize release logs version \
+        archive notarize release release-production release-zip release-dmg logs version \
         backend backend-setup backend-test \
         download-python bundle-site-packages release-app sign-app dmg notarize-dmg distribute \
         clean-python clean-dist \
@@ -69,6 +79,10 @@ help:
 	@echo "    make dmg            - Create distributable DMG"
 	@echo "    make notarize-dmg   - Notarize the DMG with Apple"
 	@echo "    make distribute     - Full pipeline: build, sign, DMG, notarize"
+	@echo "    make release-production - Production release (build, notarize, upload, appcast)"
+	@echo "    make release-zip    - Production ZIP release via scripts/release.sh"
+	@echo "    make release-dmg    - Production DMG release via scripts/release.sh"
+	@echo "    make setup-notarization - Store Apple notarization credentials"
 	@echo ""
 	@echo "  $(YELLOW)Distribution Steps (individual):$(NC)"
 	@echo "    make download-python      - Download Python $(PYTHON_VERSION) framework"
@@ -100,30 +114,56 @@ bootstrap: setup
 	@swift package resolve
 	@echo "$(GREEN)Bootstrap complete!$(NC)"
 
+setup-notarization:
+	@echo "$(YELLOW)Setting up Apple notarization credentials...$(NC)"
+	@echo ""
+	@echo "You will need:"
+	@echo "  1. Your Apple ID email"
+	@echo "  2. Team ID: 2M3JKYS79P"
+	@echo "  3. App-specific password from https://appleid.apple.com"
+	@echo ""
+	@xcrun notarytool store-credentials "LoopMaker-Notarization" \
+		--team-id "2M3JKYS79P"
+
 # =============================================================================
 # Development Commands
 # =============================================================================
 
 build:
 	@echo "$(GREEN)Building $(APP_NAME) (Debug)...$(NC)"
-	@swift build -c debug 2>&1 | xcbeautify || swift build -c debug
+	@if command -v xcbeautify >/dev/null 2>&1; then \
+		swift build -c debug 2>&1 | xcbeautify; \
+	else \
+		swift build -c debug; \
+	fi
 
 build-release:
 	@echo "$(GREEN)Building $(APP_NAME) (Release)...$(NC)"
-	@swift build -c release 2>&1 | xcbeautify || swift build -c release
+	@if command -v xcbeautify >/dev/null 2>&1; then \
+		swift build -c release 2>&1 | xcbeautify; \
+	else \
+		swift build -c release; \
+	fi
 
 # Build proper .app bundle for development (debug, no bundled Python/deps)
 app: build
 	@echo "$(GREEN)Creating $(APP_NAME).app bundle...$(NC)"
 	@mkdir -p build/$(APP_NAME).app/Contents/MacOS
 	@mkdir -p build/$(APP_NAME).app/Contents/Resources/backend
+	@mkdir -p build/$(APP_NAME).app/Contents/Frameworks
 	@cp .build/debug/$(APP_NAME) build/$(APP_NAME).app/Contents/MacOS/
+	@# Copy Sparkle.framework (required for auto-updates)
+	@if [ -d .build/debug/Sparkle.framework ]; then cp -R .build/debug/Sparkle.framework build/$(APP_NAME).app/Contents/Frameworks/; fi
+	@# Ensure the app binary can locate embedded frameworks at runtime
+	@if ! otool -l build/$(APP_NAME).app/Contents/MacOS/$(APP_NAME) | grep -q "@loader_path/../Frameworks"; then \
+		install_name_tool -add_rpath "@loader_path/../Frameworks" build/$(APP_NAME).app/Contents/MacOS/$(APP_NAME); \
+	fi
 	@cp LoopMaker/Info.plist build/$(APP_NAME).app/Contents/
-	@if [ -f LoopMaker/LoopMaker.entitlements ]; then cp LoopMaker/LoopMaker.entitlements build/$(APP_NAME).app/Contents/; fi
 	@# Copy backend files for auto-start
 	@cp backend/main.py build/$(APP_NAME).app/Contents/Resources/backend/
 	@cp backend/requirements.txt build/$(APP_NAME).app/Contents/Resources/backend/
-	@# Copy app icon if available
+	@# Copy app icon if available (.icon for macOS 26+, .icns for legacy)
+	@if [ -d LoopMaker/Resources/AppIcon.icon ]; then cp -R LoopMaker/Resources/AppIcon.icon build/$(APP_NAME).app/Contents/Resources/; fi
 	@if [ -f LoopMaker/Resources/AppIcon.icns ]; then cp LoopMaker/Resources/AppIcon.icns build/$(APP_NAME).app/Contents/Resources/; fi
 	@echo "$(GREEN)App bundle created at build/$(APP_NAME).app$(NC)"
 
@@ -190,11 +230,19 @@ quality: format lint
 
 test:
 	@echo "$(GREEN)Running all tests...$(NC)"
-	@swift test 2>&1 | xcbeautify || swift test
+	@if command -v xcbeautify >/dev/null 2>&1; then \
+		swift test 2>&1 | xcbeautify; \
+	else \
+		swift test; \
+	fi
 
 test-unit:
 	@echo "$(GREEN)Running unit tests...$(NC)"
-	@swift test --filter $(APP_NAME)Tests 2>&1 | xcbeautify || swift test --filter $(APP_NAME)Tests
+	@if command -v xcbeautify >/dev/null 2>&1; then \
+		swift test --filter $(APP_NAME)Tests 2>&1 | xcbeautify; \
+	else \
+		swift test --filter $(APP_NAME)Tests; \
+	fi
 
 coverage:
 	@echo "$(GREEN)Running tests with coverage...$(NC)"
@@ -222,11 +270,18 @@ bundle-site-packages: download-python
 		exit 1; \
 	fi
 	@echo "  Creating temporary venv..."
-	@"$(BUNDLED_PYTHON)" -m venv build/bundle-venv
+	@rm -rf build/bundle-venv
+	@DYLD_FRAMEWORK_PATH="$(abspath $(PYTHON_BUILD_DIR))" DYLD_LIBRARY_PATH="$(abspath $(PYTHON_FRAMEWORK))/Versions/3.11/lib" \
+		"$(BUNDLED_PYTHON)" -m venv --without-pip build/bundle-venv
+	@echo "  Installing pip..."
+	@DYLD_FRAMEWORK_PATH="$(abspath $(PYTHON_BUILD_DIR))" DYLD_LIBRARY_PATH="$(abspath $(PYTHON_FRAMEWORK))/Versions/3.11/lib" \
+		build/bundle-venv/bin/python -m ensurepip --upgrade --default-pip
 	@echo "  Upgrading pip..."
-	@build/bundle-venv/bin/pip install --upgrade pip --quiet
+	@DYLD_FRAMEWORK_PATH="$(abspath $(PYTHON_BUILD_DIR))" DYLD_LIBRARY_PATH="$(abspath $(PYTHON_FRAMEWORK))/Versions/3.11/lib" \
+		build/bundle-venv/bin/python -m pip install --upgrade pip --quiet
 	@echo "  Installing dependencies (this may take several minutes)..."
-	@build/bundle-venv/bin/pip install -r backend/requirements.txt --quiet
+	@DYLD_FRAMEWORK_PATH="$(abspath $(PYTHON_BUILD_DIR))" DYLD_LIBRARY_PATH="$(abspath $(PYTHON_FRAMEWORK))/Versions/3.11/lib" \
+		build/bundle-venv/bin/python -m pip install -r backend/requirements.txt --quiet
 	@echo "  Extracting site-packages..."
 	@rm -rf $(SITE_PACKAGES_DIR)
 	@cp -R build/bundle-venv/lib/python3.11/site-packages $(SITE_PACKAGES_DIR)
@@ -250,11 +305,18 @@ release-app: build-release download-python bundle-site-packages
 	@mkdir -p $(APP_BUNDLE)/Contents/Frameworks
 	@# Copy release binary
 	@cp .build/release/$(APP_NAME) $(APP_BUNDLE)/Contents/MacOS/
+	@# Copy Sparkle.framework (required for auto-updates)
+	@if [ ! -d ".build/release/Sparkle.framework" ]; then \
+		echo "$(RED)Error: Sparkle.framework not found. Run 'make build-release' first.$(NC)"; \
+		exit 1; \
+	fi
+	@cp -R .build/release/Sparkle.framework $(APP_BUNDLE)/Contents/Frameworks/
+	@# Ensure the app binary can locate embedded frameworks at runtime
+	@if ! otool -l $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME) | grep -q "@loader_path/../Frameworks"; then \
+		install_name_tool -add_rpath "@loader_path/../Frameworks" $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME); \
+	fi
 	@# Copy metadata
 	@cp LoopMaker/Info.plist $(APP_BUNDLE)/Contents/
-	@if [ -f LoopMaker/LoopMaker.entitlements ]; then \
-		cp LoopMaker/LoopMaker.entitlements $(APP_BUNDLE)/Contents/; \
-	fi
 	@# Copy Python framework (hard requirement for release)
 	@if [ ! -d "$(PYTHON_FRAMEWORK)" ]; then \
 		echo "$(RED)Error: Python.framework not found. Run 'make download-python' first.$(NC)"; \
@@ -270,7 +332,10 @@ release-app: build-release download-python bundle-site-packages
 		exit 1; \
 	fi
 	@cp -R $(SITE_PACKAGES_DIR) $(APP_BUNDLE)/Contents/Resources/backend/site-packages
-	@# Copy app icon if available
+	@# Copy app icon if available (.icon for macOS 26+, .icns for legacy)
+	@if [ -d LoopMaker/Resources/AppIcon.icon ]; then \
+		cp -R LoopMaker/Resources/AppIcon.icon $(APP_BUNDLE)/Contents/Resources/; \
+	fi
 	@if [ -f LoopMaker/Resources/AppIcon.icns ]; then \
 		cp LoopMaker/Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/; \
 	fi
@@ -285,20 +350,27 @@ sign-app:
 		echo "$(RED)Error: $(APP_BUNDLE) not found. Run 'make release-app' first.$(NC)"; \
 		exit 1; \
 	fi
+	@# Ensure no stray entitlements file is embedded in the app bundle (breaks codesign --deep verification).
+	@rm -f $(APP_BUNDLE)/Contents/LoopMaker.entitlements
 	@# Sign frameworks first (inside-out signing order)
 	@if [ -d "$(APP_BUNDLE)/Contents/Frameworks/Python.framework" ]; then \
 		echo "  Signing Python.framework..."; \
-		codesign --force --sign "$(SIGNING_IDENTITY)" --options runtime \
+		codesign --force --sign "$(SIGNING_IDENTITY)" $(CODESIGN_RUNTIME_ARGS) \
 			$(APP_BUNDLE)/Contents/Frameworks/Python.framework; \
+	fi
+	@if [ -d "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework" ]; then \
+		echo "  Signing Sparkle.framework..."; \
+		codesign --force --sign "$(SIGNING_IDENTITY)" $(CODESIGN_RUNTIME_ARGS) \
+			$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework; \
 	fi
 	@# Sign the main bundle
 	@echo "  Signing $(APP_NAME).app..."
 	@if [ -f LoopMaker/LoopMaker.entitlements ]; then \
-		codesign --force --sign "$(SIGNING_IDENTITY)" --options runtime \
+		codesign --force --sign "$(SIGNING_IDENTITY)" $(CODESIGN_RUNTIME_ARGS) \
 			--entitlements LoopMaker/LoopMaker.entitlements \
 			$(APP_BUNDLE); \
 	else \
-		codesign --force --sign "$(SIGNING_IDENTITY)" --options runtime \
+		codesign --force --sign "$(SIGNING_IDENTITY)" $(CODESIGN_RUNTIME_ARGS) \
 			$(APP_BUNDLE); \
 	fi
 	@# Verify signature
@@ -340,8 +412,20 @@ archive: release-app
 notarize: notarize-dmg
 	@echo "$(YELLOW)Note: 'make notarize' now notarizes the DMG via notarize-dmg$(NC)"
 
-release: distribute
-	@echo "$(YELLOW)Note: 'make release' now runs the full distribute pipeline$(NC)"
+release-production:
+	@echo "$(GREEN)Creating production release...$(NC)"
+	@./scripts/release.sh
+
+release-zip:
+	@echo "$(GREEN)Creating production ZIP release...$(NC)"
+	@RELEASE_FORMAT=zip ./scripts/release.sh
+
+release-dmg:
+	@echo "$(GREEN)Creating production DMG release...$(NC)"
+	@RELEASE_FORMAT=dmg ./scripts/release.sh
+
+release: release-production
+	@echo "$(YELLOW)Note: 'make release' now runs the production release pipeline$(NC)"
 
 # =============================================================================
 # Utility Commands

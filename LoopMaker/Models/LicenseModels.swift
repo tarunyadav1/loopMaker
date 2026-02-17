@@ -28,7 +28,7 @@ enum LicenseState: Equatable {
         case .unknown:
             return "Checking license..."
         case .unlicensed:
-            return "Free Version"
+            return "License required"
         case .validating:
             return "Validating..."
         case .valid:

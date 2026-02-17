@@ -46,6 +46,7 @@ extension View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     ZStack {
         Theme.background.ignoresSafeArea()
@@ -64,3 +65,4 @@ extension View {
         .padding()
     }
 }
+#endif

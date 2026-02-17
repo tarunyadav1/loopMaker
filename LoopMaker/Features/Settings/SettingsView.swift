@@ -3,24 +3,25 @@ import SwiftUI
 /// Settings view with horizontal tab bar navigation (Echo-text style)
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var updateService = UpdateService.shared
     @State private var selectedTab: SettingsTab = .general
     @State private var showCleanInstallConfirmation = false
     @State private var showClearTracksConfirmation = false
     @State private var isRestartingBackend = false
     @State private var isCleanInstalling = false
+    @State private var automaticChecks = true
+    @State private var automaticDownloads = false
 
     enum SettingsTab: String, CaseIterable {
         case general = "General"
         case updates = "Updates"
         case license = "License"
-        case about = "About"
 
         var icon: String {
             switch self {
             case .general: return "gearshape"
             case .updates: return "arrow.triangle.2.circlepath"
             case .license: return "star.circle"
-            case .about: return "info.circle"
             }
         }
     }
@@ -41,7 +42,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .background(DesignSystem.Colors.background)
+        .background(Color(nsColor: .windowBackgroundColor))
         .animation(.easeInOut(duration: 0.2), value: selectedTab)
     }
 
@@ -55,7 +56,7 @@ struct SettingsView: View {
                 }
             }
             .padding(4)
-            .glassEffect(.regular.tint(DesignSystem.Colors.accent), in: .capsule)
+            .glassEffect(in: .capsule)
         }
     }
 
@@ -109,8 +110,6 @@ struct SettingsView: View {
                     updatesSection
                 case .license:
                     LicenseSettingsSection()
-                case .about:
-                    aboutSection
                 }
             }
         }
@@ -121,7 +120,6 @@ struct SettingsView: View {
         case .general: return "Storage and playback preferences"
         case .updates: return "Check for app updates"
         case .license: return "Manage your LoopMaker Pro license"
-        case .about: return "Version info and legal"
         }
     }
 
@@ -279,46 +277,85 @@ struct SettingsView: View {
     // MARK: - Updates Section
 
     private var updatesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            settingsCard {
-                UpdatesSettingsContent()
-            }
-        }
-    }
-
-    // MARK: - About Section
-
-    private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            settingsCard {
-                VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 24) {
+            // Current Version
+            SettingsSection(title: "Current Version") {
+                VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        Text("Version")
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("LoopMaker \(updateService.currentVersion)")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text("Build \(updateService.currentBuild)")
+                                .font(.system(size: 13))
+                                .foregroundColor(.secondary)
+                        }
                         Spacer()
-                        Text(UpdateService.shared.currentVersion)
-                            .font(.system(size: 13, weight: .medium))
-                    }
-
-                    HStack {
-                        Text("Build")
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(UpdateService.shared.currentBuild)
-                            .font(.system(size: 13, weight: .medium))
-                    }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        linkRow("Privacy Policy", url: Constants.URLs.privacyURL)
-                        linkRow("Terms of Service", url: Constants.URLs.termsURL)
-                        linkRow("Get Help", url: Constants.URLs.helpURL)
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.system(size: 20))
                     }
                 }
             }
+
+            // Check for Updates
+            SettingsSection(title: "Check for Updates", footer: "Last checked: \(updateService.lastCheckDateFormatted)") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        updateService.checkForUpdates()
+                    } label: {
+                        HStack {
+                            if updateService.isCheckingForUpdates {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .padding(.trailing, 4)
+                            }
+                            Text(updateService.isCheckingForUpdates ? "Checking..." : "Check for Updates")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(updateService.isCheckingForUpdates || !updateService.canCheckForUpdates)
+                }
+            }
+
+            // Automatic Updates
+            SettingsSection(
+                title: "Automatic Updates",
+                footer: "When enabled, LoopMaker will periodically check for updates in the background."
+            ) {
+                VStack(alignment: .leading, spacing: 0) {
+                    SettingsToggleRow(label: "Check for updates automatically", isOn: $automaticChecks)
+                        .onChange(of: automaticChecks) { _, newValue in
+                            updateService.automaticUpdateChecks = newValue
+                        }
+
+                    SettingsDivider()
+
+                    SettingsToggleRow(label: "Download updates automatically", isOn: $automaticDownloads)
+                        .onChange(of: automaticDownloads) { _, newValue in
+                            updateService.automaticDownloads = newValue
+                        }
+                        .disabled(!automaticChecks)
+                        .opacity(automaticChecks ? 1.0 : 0.5)
+                }
+            }
+
+            // Update Channel Info
+            SettingsSection(title: "About Updates") {
+                VStack(alignment: .leading, spacing: 0) {
+                    Label("Updates are delivered securely via Sparkle", systemImage: "lock.shield")
+                        .font(.system(size: 13))
+                    SettingsDivider()
+                    Label("All updates are signed and verified", systemImage: "checkmark.seal")
+                        .font(.system(size: 13))
+                    SettingsDivider()
+                    Label("Your data never leaves your device", systemImage: "hand.raised")
+                        .font(.system(size: 13))
+                }
+            }
+        }
+        .onAppear {
+            automaticChecks = updateService.automaticUpdateChecks
+            automaticDownloads = updateService.automaticDownloads
         }
     }
 
@@ -334,21 +371,9 @@ struct SettingsView: View {
             )
     }
 
-    private func linkRow(_ title: String, url: URL) -> some View {
-        Button {
-            NSWorkspace.shared.open(url)
-        } label: {
-            HStack {
-                Text(title)
-                    .font(.system(size: 13))
-                    .foregroundColor(.primary)
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .buttonStyle(.plain)
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
     }
 
     private var storageUsed: String {
@@ -369,67 +394,9 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Updates Settings Content
-
-struct UpdatesSettingsContent: View {
-    @StateObject private var updateService = UpdateService.shared
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Current Version")
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("\(updateService.currentVersion) (\(updateService.currentBuild))")
-                    .font(.system(size: 13, weight: .medium))
-            }
-
-            HStack {
-                Text("Last Checked")
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text(updateService.lastCheckDateFormatted)
-                    .font(.system(size: 13, weight: .medium))
-            }
-
-            Divider()
-
-            Toggle("Check for updates automatically", isOn: Binding(
-                get: { updateService.automaticUpdateChecks },
-                set: { updateService.automaticUpdateChecks = $0 }
-            ))
-            .font(.system(size: 13))
-
-            Toggle("Download updates automatically", isOn: Binding(
-                get: { updateService.automaticDownloads },
-                set: { updateService.automaticDownloads = $0 }
-            ))
-            .font(.system(size: 13))
-
-            Divider()
-
-            Button {
-                updateService.checkForUpdates()
-            } label: {
-                Text("Check for Updates Now")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        DesignSystem.Colors.accent,
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(!updateService.canCheckForUpdates)
-        }
-    }
-}
-
+#if PREVIEWS
 #Preview {
     SettingsView()
         .environmentObject(AppState())
 }
+#endif

@@ -280,6 +280,8 @@ struct LicenseGateView: View {
     }
 }
 
+#if PREVIEWS
 #Preview {
     LicenseGateView()
 }
+#endif

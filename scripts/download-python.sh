@@ -70,13 +70,19 @@ echo -e "${GREEN}Extracting Python framework...${NC}"
 # Create extraction directory
 EXTRACT_DIR="extracted"
 rm -rf "$EXTRACT_DIR"
-mkdir -p "$EXTRACT_DIR"
 
 # Expand the pkg
 pkgutil --expand-full "$PKG_FILE" "$EXTRACT_DIR"
 
 # Find and copy the Python framework
 FRAMEWORK_SOURCE=$(find "$EXTRACT_DIR" -type d -name "Python.framework" | head -1)
+
+# Python.org's macos11 installer is a distribution pkg with subpackages.
+# For the framework package, the expanded Payload directory contains the
+# contents of /Library/Frameworks/Python.framework (without the outer folder).
+if [ -z "$FRAMEWORK_SOURCE" ] && [ -d "$EXTRACT_DIR/Python_Framework.pkg/Payload/Versions" ]; then
+    FRAMEWORK_SOURCE="$EXTRACT_DIR/Python_Framework.pkg/Payload"
+fi
 
 if [ -z "$FRAMEWORK_SOURCE" ]; then
     echo -e "${RED}Could not find Python.framework in package${NC}"
@@ -98,6 +104,10 @@ PYTHON_BIN="$FRAMEWORK_DEST/Versions/${PYTHON_MAJOR_MINOR}/bin/python3"
 if [ -x "$PYTHON_BIN" ]; then
     echo -e "${GREEN}Python framework extracted successfully!${NC}"
     echo -e "${GREEN}Python binary: ${PYTHON_BIN}${NC}"
+    # The Python.org framework binary expects to load Python.framework from /Library/Frameworks.
+    # For bundling, we use DYLD_FRAMEWORK_PATH so it resolves to the local extracted framework.
+    DYLD_FRAMEWORK_PATH="$(pwd)" \
+    DYLD_LIBRARY_PATH="$(pwd)/${FRAMEWORK_DEST}/Versions/${PYTHON_MAJOR_MINOR}/lib" \
     "$PYTHON_BIN" --version
 else
     echo -e "${RED}Python binary not found at expected location${NC}"
@@ -113,9 +123,9 @@ cat > test_python.sh << 'EOF'
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="$SCRIPT_DIR/Python.framework/Versions/3.11/bin/python3"
 echo "Testing bundled Python..."
-$PYTHON -c "import sys; print(f'Python {sys.version}')"
-$PYTHON -c "import venv; print('venv module: OK')"
-$PYTHON -c "import pip; print(f'pip version: {pip.__version__}')"
+DYLD_FRAMEWORK_PATH="$SCRIPT_DIR" DYLD_LIBRARY_PATH="$SCRIPT_DIR/Python.framework/Versions/3.11/lib" $PYTHON -c "import sys; print(f'Python {sys.version}')"
+DYLD_FRAMEWORK_PATH="$SCRIPT_DIR" DYLD_LIBRARY_PATH="$SCRIPT_DIR/Python.framework/Versions/3.11/lib" $PYTHON -c "import venv; print('venv module: OK')"
+DYLD_FRAMEWORK_PATH="$SCRIPT_DIR" DYLD_LIBRARY_PATH="$SCRIPT_DIR/Python.framework/Versions/3.11/lib" $PYTHON -c "import pip; print(f'pip version: {pip.__version__}')"
 echo "All tests passed!"
 EOF
 chmod +x test_python.sh

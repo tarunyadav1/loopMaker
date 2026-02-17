@@ -1,10 +1,13 @@
-name = "loopmaker-license-server"
+name = "loopmaker-license"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
 [[kv_namespaces]]
 binding = "LICENSE_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "0ed2d09f616548818b01ec51e4cb2c5d"
 
 [vars]
 ENVIRONMENT = "production"
+
+# Set as secret (required):
+# npx wrangler secret put GUMROAD_PRODUCT_ID

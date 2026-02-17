@@ -20,7 +20,9 @@ struct SetupView: View {
     }
 }
 
+#if PREVIEWS
 #Preview("Setup View") {
     SetupView()
         .environmentObject(AppState())
 }
+#endif

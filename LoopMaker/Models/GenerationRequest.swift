@@ -23,6 +23,24 @@ public enum QualityMode: String, CaseIterable, Codable, Sendable {
     }
 }
 
+public enum VocalLanguageHint: String, Codable, Sendable, CaseIterable {
+    case english
+    case hindi
+    case spanish
+    case korean
+    case multilingual
+
+    public var displayName: String {
+        switch self {
+        case .english: return "English"
+        case .hindi: return "Hindi"
+        case .spanish: return "Spanish"
+        case .korean: return "Korean"
+        case .multilingual: return "Multilingual"
+        }
+    }
+}
+
 /// Request parameters for music generation
 public struct GenerationRequest: Sendable, Equatable {
     public static func == (lhs: GenerationRequest, rhs: GenerationRequest) -> Bool {
@@ -107,13 +125,164 @@ public struct GenerationRequest: Sendable, Equatable {
 
     /// Full prompt (genre text is now included directly in the prompt field)
     public var fullPrompt: String {
-        return prompt
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let languageHint else { return trimmedPrompt }
+
+        let loweredPrompt = trimmedPrompt.lowercased()
+        if loweredPrompt.contains("vocal language:") || loweredPrompt.contains("lyrics language:") {
+            return trimmedPrompt
+        }
+
+        let directive = "Vocal language: \(languageHint.displayName). Keep all sung lyrics in \(languageHint.displayName) only."
+        return "\(directive) \(trimmedPrompt)"
     }
 
     /// Effective lyrics (returns [inst] for instrumental)
     public var effectiveLyrics: String {
         lyrics ?? "[inst]"
     }
+
+    /// Detect intended vocal language from lyrics first, then prompt keywords.
+    public var languageHint: VocalLanguageHint? {
+        guard shouldInferVocalLanguage else { return nil }
+
+        if let lyricsText = normalizedLyricsForDetection,
+           let hint = Self.detectLanguage(from: lyricsText) {
+            return hint
+        }
+
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else { return nil }
+        return Self.detectLanguage(from: trimmedPrompt)
+    }
+
+    private var shouldInferVocalLanguage: Bool {
+        guard let rawLyrics = lyrics?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+
+        // Cover mode uses empty string to preserve source vocals.
+        if taskType == .cover && rawLyrics.isEmpty {
+            return false
+        }
+
+        return !rawLyrics.isEmpty && rawLyrics != "[inst]"
+    }
+
+    private var normalizedLyricsForDetection: String? {
+        guard let rawLyrics = lyrics?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawLyrics.isEmpty,
+              rawLyrics != "[inst]" else {
+            return nil
+        }
+        return rawLyrics
+    }
+
+    private static func detectLanguage(from text: String) -> VocalLanguageHint? {
+        if let scriptHint = detectLanguageFromScript(text) {
+            return scriptHint
+        }
+        return detectLanguageFromKeywords(text)
+    }
+
+    private static func detectLanguageFromScript(_ text: String) -> VocalLanguageHint? {
+        var hasDevanagari = false
+        var hasHangul = false
+        var hasSpanishMarkers = false
+
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+
+            if (0x0900 ... 0x097F).contains(value) {
+                hasDevanagari = true
+            }
+
+            if (0xAC00 ... 0xD7AF).contains(value)
+                || (0x1100 ... 0x11FF).contains(value)
+                || (0x3130 ... 0x318F).contains(value) {
+                hasHangul = true
+            }
+
+            if spanishMarkerScalarValues.contains(value) {
+                hasSpanishMarkers = true
+            }
+        }
+
+        if hasDevanagari {
+            return .hindi
+        }
+        if hasHangul {
+            return .korean
+        }
+        if hasSpanishMarkers {
+            return .spanish
+        }
+        return nil
+    }
+
+    private static func detectLanguageFromKeywords(_ text: String) -> VocalLanguageHint? {
+        let lowered = text.lowercased()
+        var matches: Set<VocalLanguageHint> = []
+
+        for (hint, keywords) in languageKeywordBuckets {
+            if keywords.contains(where: { lowered.contains($0) }) {
+                matches.insert(hint)
+            }
+        }
+
+        if matches.contains(.multilingual) {
+            return .multilingual
+        }
+        if matches.count > 1 {
+            return .multilingual
+        }
+        return matches.first
+    }
+
+    private static let languageKeywordBuckets: [(VocalLanguageHint, [String])] = [
+        (
+            .multilingual,
+            [
+                "multilingual", "bilingual", "mixed language", "code-switch",
+                "hindi and english", "english and hindi",
+                "spanish and english", "english and spanish",
+                "mix hindi", "mix spanish",
+            ]
+        ),
+        (
+            .hindi,
+            [
+                "hindi", "bollywood", "desi", "punjabi", "urdu", "hindustani",
+                "dhol", "tabla", "qawwali", "ghazal",
+                "baarish", "saansein", "raaste", "gaayen", "dil", "tera",
+            ]
+        ),
+        (
+            .spanish,
+            [
+                "spanish", "espanol", "latin pop", "latin", "reggaeton", "dembow",
+                "salsa", "bachata", "corridos", "en espanol",
+            ]
+        ),
+        (
+            .korean,
+            [
+                "korean", "k-pop", "kpop", "hangul",
+            ]
+        ),
+        (
+            .english,
+            [
+                "english",
+            ]
+        ),
+    ]
+
+    private static let spanishMarkerScalarValues: Set<UInt32> = [
+        0x00C1, 0x00C9, 0x00CD, 0x00D1, 0x00D3, 0x00DA, 0x00DC,
+        0x00E1, 0x00E9, 0x00ED, 0x00F1, 0x00F3, 0x00FA, 0x00FC,
+        0x00BF, 0x00A1,
+    ]
 }
 
 // MARK: - Music Metadata Options

@@ -146,6 +146,7 @@ struct ActionButton: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     ZStack {
         Theme.background.ignoresSafeArea()
@@ -168,3 +169,4 @@ struct ActionButton: View {
         .padding()
     }
 }
+#endif

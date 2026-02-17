@@ -11,6 +11,8 @@ struct LibraryView: View {
     @State private var isMultiSelectMode = false
     @State private var selectedTrackIDs: Set<UUID> = []
     @State private var showDeleteSelectedConfirmation = false
+    @State private var showBatchExportResultAlert = false
+    @State private var batchExportResultMessage = ""
 
     enum ViewMode {
         case grid, list
@@ -47,6 +49,11 @@ struct LibraryView: View {
             }
         }
         .background(Theme.background)
+        .alert("Batch Export", isPresented: $showBatchExportResultAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(batchExportResultMessage)
+        }
     }
 
     private var libraryContent: some View {
@@ -428,21 +435,55 @@ struct LibraryView: View {
 
         panel.begin { response in
             guard response == .OK, let folderURL = panel.url else { return }
+            var exportedCount = 0
+            var failedNames: [String] = []
             for track in tracks {
-                let destName = "\(track.displayTitle).wav"
-                let destURL = folderURL.appendingPathComponent(destName)
+                let baseName = sanitizedFilenameComponent(track.displayTitle)
+                let destURL = uniqueDestinationURL(
+                    in: folderURL,
+                    preferredBaseName: baseName,
+                    fileExtension: "wav"
+                )
                 do {
-                    if FileManager.default.fileExists(atPath: destURL.path) {
-                        try FileManager.default.removeItem(at: destURL)
-                    }
                     try FileManager.default.copyItem(at: track.audioURL, to: destURL)
+                    exportedCount += 1
                 } catch {
+                    failedNames.append(track.displayTitle)
                     Log.export.error("Batch export error for \(track.displayTitle): \(error.localizedDescription)")
                 }
             }
+
+            if failedNames.isEmpty {
+                batchExportResultMessage = "Exported \(exportedCount) track(s) successfully."
+            } else {
+                let preview = failedNames.prefix(3).joined(separator: ", ")
+                let suffix = failedNames.count > 3 ? ", and \(failedNames.count - 3) more" : ""
+                batchExportResultMessage =
+                    "Exported \(exportedCount) of \(tracks.count). Failed: \(preview)\(suffix)."
+            }
+            showBatchExportResultAlert = true
             selectedTrackIDs.removeAll()
             isMultiSelectMode = false
         }
+    }
+
+    private func sanitizedFilenameComponent(_ raw: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let components = raw.components(separatedBy: invalidCharacters)
+        let collapsed = components.joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = collapsed.isEmpty ? "Track" : collapsed
+        return String(cleaned.prefix(80))
+    }
+
+    private func uniqueDestinationURL(in folder: URL, preferredBaseName: String, fileExtension: String) -> URL {
+        var candidate = folder.appendingPathComponent("\(preferredBaseName).\(fileExtension)")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(preferredBaseName)-\(suffix).\(fileExtension)")
+            suffix += 1
+        }
+        return candidate
     }
 
     // MARK: - Actions
@@ -1076,7 +1117,9 @@ struct NowPlayingIndicator: View {
     }
 }
 
+#if PREVIEWS
 #Preview {
     LibraryView()
         .environmentObject(AppState())
 }
+#endif

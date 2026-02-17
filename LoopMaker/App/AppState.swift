@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// Global application state
 @MainActor
@@ -38,6 +39,7 @@ public final class AppState: ObservableObject {
     @Published var modelDownloadStates: [ModelType: ModelDownloadState] = [
         .acestep: .notDownloaded
     ]
+    @Published var modelDownloadMessages: [ModelType: String] = [:]
 
     // MARK: - Library State
     @Published var tracks: [Track] = []
@@ -48,6 +50,8 @@ public final class AppState: ObservableObject {
 
     // MARK: - Services
     private var generationTask: Task<Void, Never>?
+    private var activeGenerationID: UUID?
+    private var cancellables = Set<AnyCancellable>()
     private(set) var pythonBackend = PythonBackendService()
     let audioPlayer = AudioPlayer()
     let licenseService = LicenseService.shared
@@ -78,15 +82,72 @@ public final class AppState: ObservableObject {
         // Register as shared instance for app-level access
         registerAsShared()
 
+        // Keep UI connection/error flags synchronized with backend lifecycle changes.
+        bindBackendState()
+        bindLicenseState()
+
         // Restore persisted tracks from disk
         restoreTracksFromDisk()
 
         // Restore persisted model download states before backend check
         restoreModelDownloadStates()
+    }
 
-        // Start backend automatically on launch
-        Task {
-            await startBackendAndSetup()
+    private func bindBackendState() {
+        backendManager.$state
+            .sink { [weak self] newState in
+                self?.syncBackendStatus(for: newState)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func bindLicenseState() {
+        licenseService.$licenseState
+            .sink { [weak self] newState in
+                self?.handleLicenseStateChange(newState)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func handleLicenseStateChange(_ state: LicenseState) {
+        switch state {
+        case .valid, .offlineGrace:
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.startBackendAndSetup()
+            }
+
+        case .unknown, .validating:
+            break
+
+        case .unlicensed, .invalid, .expired:
+            backendConnected = false
+            backendError = nil
+            showSetup = false
+
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.backendManager.stopBackend()
+                self.backendManager.state = .notStarted
+            }
+        }
+    }
+
+    private func syncBackendStatus(for state: BackendProcessManager.State) {
+        switch state {
+        case .running:
+            backendConnected = true
+            backendError = nil
+            showSetup = false
+
+        case .pythonMissing, .error:
+            backendConnected = false
+            backendError = UIRedaction.redactModelNames(in: state.userMessage)
+            showSetup = true
+
+        default:
+            backendConnected = false
+            backendError = nil
         }
     }
 
@@ -106,7 +167,7 @@ public final class AppState: ObservableObject {
             // Show setup view for errors
             showSetup = true
             backendConnected = false
-            backendError = backendManager.state.userMessage
+            backendError = UIRedaction.redactModelNames(in: backendManager.state.userMessage)
 
         default:
             // Still setting up - this shouldn't happen as ensureBackendRunning awaits
@@ -121,23 +182,16 @@ public final class AppState: ObservableObject {
     }
 
     /// Check model download status from backend.
-    /// Merges with persisted state: backend confirmation of "downloaded" always wins,
-    /// but backend "not downloaded" only downgrades if we didn't have a persisted state.
     private func checkModelStatus() async {
         do {
             let status = try await pythonBackend.getModelStatus()
             for (model, isDownloaded) in status {
+                let current = modelDownloadStates[model] ?? .notDownloaded
+                // Don't stomp on an in-flight download UI.
+                if current.isDownloading { continue }
+                modelDownloadStates[model] = isDownloaded ? .downloaded : .notDownloaded
                 if isDownloaded {
-                    // Backend confirms downloaded - always trust this
-                    modelDownloadStates[model] = .downloaded
-                } else {
-                    // Backend says not downloaded - only downgrade if we don't
-                    // already have a persisted .downloaded state. The backend may
-                    // not recognize models cached in HuggingFace/transformers paths.
-                    let current = modelDownloadStates[model] ?? .notDownloaded
-                    if !current.isDownloaded {
-                        modelDownloadStates[model] = .notDownloaded
-                    }
+                    modelDownloadMessages[model] = nil
                 }
             }
             persistModelDownloadStates()
@@ -145,6 +199,64 @@ public final class AppState: ObservableObject {
         } catch {
             // Network error fetching status - keep persisted states, don't wipe them
             Log.app.warning("Could not fetch model status from backend: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Model Preparation
+
+    /// Ensure the selected model is available locally, downloading if needed.
+    /// Updates `modelDownloadStates` for UI and throws on failure.
+    private func ensureModelReady(_ model: ModelType) async throws {
+        if modelDownloadStates[model]?.isDownloading == true { return }
+
+        // Quick truth check against backend (avoids re-downloading when local state is stale).
+        let status = try await pythonBackend.getModelStatus()
+        if status[model] == true {
+            modelDownloadStates[model] = .downloaded
+            modelDownloadMessages[model] = nil
+            persistModelDownloadStates()
+            return
+        }
+
+        modelDownloadStates[model] = .downloading(progress: 0)
+        modelDownloadMessages[model] =
+            "Downloading music engine files (\(model.sizeFormatted)). This happens once and may take a while."
+
+        do {
+            try await pythonBackend.downloadModel(model) { progress, message in
+                Task { @MainActor in
+                    self.modelDownloadStates[model] = .downloading(progress: progress)
+                    if let message, !message.isEmpty {
+                        self.modelDownloadMessages[model] = UIRedaction.redactModelNames(in: message)
+                    }
+                }
+            }
+            modelDownloadStates[model] = .downloaded
+            modelDownloadMessages[model] = nil
+            persistModelDownloadStates()
+        } catch {
+            // Show a user-facing error (detailed logs already exist in backend output).
+            modelDownloadStates[model] = .error("Couldn't download the music model. Check your internet and try again.")
+            // Keep the last message around for context if present.
+            throw error
+        }
+    }
+
+    /// Start generation, downloading required model files first if needed.
+    func startGenerationEnsuringModel(request: GenerationRequest) {
+        guard backendConnected else {
+            backendError = "Music engine is offline."
+            return
+        }
+        guard !isGenerating else { return }
+
+        Task {
+            do {
+                try await ensureModelReady(request.model)
+                startGeneration(request: request)
+            } catch {
+                Log.app.warning("Model preparation failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -172,7 +284,7 @@ public final class AppState: ObservableObject {
             backendConnected = true
             await checkModelStatus()
         } else {
-            backendError = backendManager.state.userMessage
+            backendError = UIRedaction.redactModelNames(in: backendManager.state.userMessage)
         }
     }
 
@@ -187,7 +299,7 @@ public final class AppState: ObservableObject {
             backendConnected = true
             await checkModelStatus()
         } else {
-            backendError = backendManager.state.userMessage
+            backendError = UIRedaction.redactModelNames(in: backendManager.state.userMessage)
         }
     }
 
@@ -209,7 +321,7 @@ public final class AppState: ObservableObject {
         return state.isDownloaded && !isGenerating
     }
 
-    /// Check if a model is accessible (either free or user is Pro)
+    /// Check if a model is accessible for the current license state.
     func isModelAccessible(_ model: ModelType) -> Bool {
         !model.requiresPro || isProUser
     }
@@ -219,18 +331,36 @@ public final class AppState: ObservableObject {
     func startGeneration(request: GenerationRequest) {
         guard canGenerate else { return }
 
+        let generationID = UUID()
+        activeGenerationID = generationID
         isGenerating = true
         generationProgress = 0
         generationStatus = "Starting generation..."
         currentRequest = request
 
         generationTask = Task {
+            defer {
+                if self.activeGenerationID == generationID {
+                    self.isGenerating = false
+                    self.currentRequest = nil
+                    self.generationTask = nil
+                    self.activeGenerationID = nil
+                }
+            }
+
             do {
                 let generatedTracks = try await pythonBackend.generate(request: request) { progress, status in
                     Task { @MainActor in
+                        guard self.activeGenerationID == generationID else { return }
                         self.generationProgress = progress
-                        self.generationStatus = status
+                        self.generationStatus = UIRedaction.redactModelNames(in: status)
                     }
+                }
+
+                guard self.activeGenerationID == generationID else { return }
+                guard !Task.isCancelled else {
+                    generationStatus = "Cancelled"
+                    return
                 }
 
                 generationProgress = 1
@@ -246,18 +376,28 @@ public final class AppState: ObservableObject {
                 persistTracksToDisk()
                 let count = generatedTracks.count
                 generationStatus = count > 1 ? "Complete! \(count) variations generated" : "Complete!"
+            } catch is CancellationError {
+                guard self.activeGenerationID == generationID else { return }
+                generationStatus = "Cancelled"
             } catch {
-                generationStatus = "Error: \(error.localizedDescription)"
+                guard self.activeGenerationID == generationID else { return }
+                if Task.isCancelled {
+                    generationStatus = "Cancelled"
+                } else {
+                    let safeMessage = UIRedaction.redactModelNames(in: error.localizedDescription)
+                    generationStatus = "Error: \(safeMessage)"
+                }
             }
-
-            isGenerating = false
-            currentRequest = nil
         }
     }
 
     func cancelGeneration() {
+        let cancelledID = activeGenerationID
         generationTask?.cancel()
         generationTask = nil
+        if activeGenerationID == cancelledID {
+            activeGenerationID = nil
+        }
         isGenerating = false
         generationProgress = 0
         generationStatus = "Cancelled"
@@ -269,15 +409,19 @@ public final class AppState: ObservableObject {
 
         Task {
             do {
-                try await pythonBackend.downloadModel(model) { progress in
+                try await pythonBackend.downloadModel(model) { progress, message in
                     Task { @MainActor in
                         self.modelDownloadStates[model] = .downloading(progress: progress)
+                        if let message, !message.isEmpty {
+                            self.modelDownloadMessages[model] = UIRedaction.redactModelNames(in: message)
+                        }
                     }
                 }
                 modelDownloadStates[model] = .downloaded
+                modelDownloadMessages[model] = nil
                 persistModelDownloadStates()
             } catch {
-                modelDownloadStates[model] = .error(error.localizedDescription)
+                modelDownloadStates[model] = .error("Couldn't download the music model. Check your internet and try again.")
             }
         }
     }

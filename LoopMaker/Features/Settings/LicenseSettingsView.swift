@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// License activation and management section for embedding in a Form-based SettingsView
+/// License activation and management view (EchoText-style SettingsSection layout)
 struct LicenseSettingsSection: View {
     @StateObject private var licenseService = LicenseService.shared
     @State private var licenseKey = ""
@@ -38,56 +38,43 @@ struct LicenseSettingsSection: View {
         } message: {
             Text(errorMessage ?? "An error occurred")
         }
+        .alert("License Activated", isPresented: $showSuccess) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your license is active. LoopMaker is ready to use.")
+        }
     }
 
     // MARK: - Status Section
 
     private var currentStatusSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("LICENSE STATUS")
-                .font(DesignSystem.Typography.sectionHeader)
-                .foregroundColor(DesignSystem.Colors.textTertiary)
-                .tracking(0.5)
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            statusIcon
-                            Text(statusTitle)
-                                .font(.system(size: 15, weight: .semibold))
-                        }
-
-                        Text(licenseService.licenseState.displayStatus)
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-
-                        if let maskedKey = licenseService.maskedLicenseKey,
-                           licenseService.licenseState.isPro {
-                            Text(maskedKey)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(.secondary)
-                                .padding(.top, 2)
-                        }
+        SettingsSection(title: "License Status") {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        statusIcon
+                        Text(statusTitle)
+                            .font(.system(size: 15, weight: .semibold))
                     }
-                    Spacer()
 
-                    if licenseService.isValidating {
-                        ProgressView()
-                            .scaleEffect(0.8)
+                    Text(licenseService.licenseState.displayStatus)
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+
+                    if let maskedKey = licenseService.maskedLicenseKey, licenseService.licenseState.isPro {
+                        Text(maskedKey)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .padding(.top, 2)
                     }
                 }
+                Spacer()
+
+                if licenseService.isValidating {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .fill(DesignSystem.Colors.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .stroke(DesignSystem.Colors.border, lineWidth: 1)
-            )
         }
     }
 
@@ -96,7 +83,7 @@ struct LicenseSettingsSection: View {
             switch licenseService.licenseState {
             case .valid, .offlineGrace:
                 Image(systemName: "checkmark.seal.fill")
-                    .foregroundColor(DesignSystem.Colors.success)
+                    .foregroundColor(.green)
                     .font(.system(size: 20))
             case .validating:
                 ProgressView()
@@ -107,7 +94,7 @@ struct LicenseSettingsSection: View {
                     .font(.system(size: 20))
             case .invalid, .expired:
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(DesignSystem.Colors.warning)
+                    .foregroundColor(.orange)
                     .font(.system(size: 20))
             }
         }
@@ -117,10 +104,12 @@ struct LicenseSettingsSection: View {
         switch licenseService.licenseState {
         case .valid, .offlineGrace:
             return "Pro License Active"
+        case .unknown:
+            return "Checking License..."
         case .validating:
             return "Validating..."
-        case .unlicensed, .unknown:
-            return "Free Version"
+        case .unlicensed:
+            return "License Required"
         case .invalid:
             return "License Invalid"
         case .expired:
@@ -131,23 +120,14 @@ struct LicenseSettingsSection: View {
     // MARK: - Activation Section
 
     private var activationSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("ACTIVATE LICENSE")
-                .font(DesignSystem.Typography.sectionHeader)
-                .foregroundColor(DesignSystem.Colors.textTertiary)
-                .tracking(0.5)
-
+        SettingsSection(title: "Activate License", footer: "Enter your license key from Gumroad to use LoopMaker.") {
             VStack(alignment: .leading, spacing: 12) {
                 TextField("License Key", text: $licenseKey)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14, design: .monospaced))
                     .padding(10)
-                    .background(DesignSystem.Colors.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.small))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.small)
-                            .stroke(DesignSystem.Colors.border, lineWidth: 1)
-                    )
+                    .background(Color.primary.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .onSubmit {
                         activateLicense()
                     }
@@ -165,10 +145,7 @@ struct LicenseSettingsSection: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(
-                        licenseKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || isActivating
-                    )
+                    .disabled(licenseKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isActivating)
 
                     Button("Buy License") {
                         NSWorkspace.shared.open(Constants.URLs.gumroadURL)
@@ -176,49 +153,16 @@ struct LicenseSettingsSection: View {
                     .buttonStyle(.bordered)
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .fill(DesignSystem.Colors.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .stroke(DesignSystem.Colors.border, lineWidth: 1)
-            )
-
-            Text("Enter your license key from Gumroad to unlock Pro features.")
-                .font(.system(size: 12))
-                .foregroundColor(DesignSystem.Colors.textTertiary)
-                .padding(.horizontal, 4)
         }
     }
 
     // MARK: - License Management Section
 
     private var licenseManagementSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("MANAGE LICENSE")
-                .font(DesignSystem.Typography.sectionHeader)
-                .foregroundColor(DesignSystem.Colors.textTertiary)
-                .tracking(0.5)
-
+        SettingsSection(title: "Manage License", footer: "Deactivate to transfer your license to another device.") {
             VStack(alignment: .leading, spacing: 12) {
                 // License info
                 if case .valid(let info) = licenseService.licenseState {
-                    if let email = info.email {
-                        HStack {
-                            Text("Email")
-                                .font(.system(size: 13))
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(email)
-                                .font(.system(size: 13))
-                        }
-                        Divider()
-                            .padding(.vertical, 4)
-                    }
-
                     HStack {
                         Text("Activated")
                             .font(.system(size: 13))
@@ -227,8 +171,7 @@ struct LicenseSettingsSection: View {
                         Text(formatDate(info.activatedAt))
                             .font(.system(size: 13))
                     }
-                    Divider()
-                        .padding(.vertical, 4)
+                    SettingsDivider()
                 }
 
                 HStack {
@@ -251,47 +194,22 @@ struct LicenseSettingsSection: View {
                     .buttonStyle(.bordered)
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .fill(DesignSystem.Colors.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .stroke(DesignSystem.Colors.border, lineWidth: 1)
-            )
-
-            Text("Deactivate to transfer your license to another device.")
-                .font(.system(size: 12))
-                .foregroundColor(DesignSystem.Colors.textTertiary)
-                .padding(.horizontal, 4)
         }
     }
 
     // MARK: - Pro Features Section
 
     private var proFeaturesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("PRO FEATURES")
-                .font(DesignSystem.Typography.sectionHeader)
-                .foregroundColor(DesignSystem.Colors.textTertiary)
-                .tracking(0.5)
-
+        SettingsSection(
+            title: "Pro Features",
+            footer: licenseService.licenseState.isPro ? "All features unlocked" : "Activate a license key to unlock features."
+        ) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(ProFeature.allCases.enumerated()), id: \.element) { index, feature in
                     HStack {
-                        Image(
-                            systemName: licenseService.licenseState.isPro
-                                ? "checkmark.circle.fill"
-                                : "lock.fill"
-                        )
-                        .foregroundColor(
-                            licenseService.licenseState.isPro
-                                ? DesignSystem.Colors.success
-                                : .secondary
-                        )
-                        .font(.system(size: 14))
+                        Image(systemName: licenseService.licenseState.isPro ? "checkmark.circle.fill" : "lock.fill")
+                            .foregroundColor(licenseService.licenseState.isPro ? .green : .secondary)
+                            .font(.system(size: 14))
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(feature.displayName)
@@ -306,30 +224,10 @@ struct LicenseSettingsSection: View {
                     .padding(.vertical, 4)
 
                     if index < ProFeature.allCases.count - 1 {
-                        Divider()
-                            .padding(.vertical, 4)
+                        SettingsDivider()
                     }
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .fill(DesignSystem.Colors.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
-                    .stroke(DesignSystem.Colors.border, lineWidth: 1)
-            )
-
-            Text(
-                licenseService.licenseState.isPro
-                    ? "All features unlocked"
-                    : "Upgrade to Pro to unlock these features"
-            )
-            .font(.system(size: 12))
-            .foregroundColor(DesignSystem.Colors.textTertiary)
-            .padding(.horizontal, 4)
         }
     }
 
@@ -424,11 +322,11 @@ struct LicenseEntryView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 14, design: .monospaced))
                     .padding(12)
-                    .background(DesignSystem.Colors.surface)
+                    .background(Color.primary.opacity(0.04))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(DesignSystem.Colors.border, lineWidth: 1)
+                            .stroke(Color.primary.opacity(0.10), lineWidth: 1)
                     )
                     .onSubmit {
                         activate()
@@ -437,7 +335,7 @@ struct LicenseEntryView: View {
                 if let error = errorMessage {
                     Text(error)
                         .font(.caption)
-                        .foregroundColor(DesignSystem.Colors.error)
+                        .foregroundColor(.red)
                 }
             }
 
@@ -468,9 +366,8 @@ struct LicenseEntryView: View {
                     }
                     .buttonStyle(.bordered)
 
-                    Button("Continue Free") {
+                    Button("Cancel") {
                         dismiss()
-                        onComplete?()
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(.secondary)
@@ -563,7 +460,7 @@ struct FeatureLockOverlay: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
-            Button("Upgrade to Pro") {
+            Button("Activate License") {
                 showLicenseSheet = true
             }
             .buttonStyle(.borderedProminent)
@@ -578,6 +475,7 @@ struct FeatureLockOverlay: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview("License Settings") {
     LicenseSettingsSection()
         .padding()
@@ -587,3 +485,4 @@ struct FeatureLockOverlay: View {
 #Preview("License Entry") {
     LicenseEntryView()
 }
+#endif

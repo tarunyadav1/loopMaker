@@ -46,9 +46,25 @@ struct MainWindow: View {
         return false
     }
 
+    /// Keep launch UX stable while local license state is still loading.
+    private var shouldShowLicenseLoading: Bool {
+        !licenseService.hasCompletedInitialCheck
+    }
+
     var body: some View {
         Group {
-            if shouldShowSetupOverlay {
+            if shouldShowLicenseLoading {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Checking license...")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
+            } else if !licenseService.licenseState.isValid {
+                LicenseGateView()
+            } else if shouldShowSetupOverlay {
                 SetupOverlay()
                     .environmentObject(appState)
             } else {
@@ -389,12 +405,12 @@ struct SetupProgressContent: View {
 
             // Current step info
             VStack(spacing: 8) {
-                Text(state.userMessage)
+                Text(UIRedaction.redactModelNames(in: state.userMessage))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.primary)
 
                 if case .installingDependencies = state {
-                    Text("Setting up AI models and Python dependencies...")
+                    Text("Setting up AI components and Python dependencies...")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -458,7 +474,7 @@ struct SetupProgressContent: View {
             VStack(spacing: 4) {
                 Text("Setup couldn't complete")
                     .font(.system(size: 16, weight: .semibold))
-                Text(message)
+                Text(UIRedaction.redactModelNames(in: message))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -499,7 +515,7 @@ struct SetupProgressContent: View {
             VStack(spacing: 4) {
                 Text("Python Required")
                     .font(.system(size: 16, weight: .semibold))
-                Text("LoopMaker needs Python 3.9+ to run the AI music engine.")
+                Text("LoopMaker needs Python 3.11.x to run the AI music engine.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -628,7 +644,9 @@ enum SetupStep: Int, CaseIterable {
     }
 }
 
+#if PREVIEWS
 #Preview {
     MainWindow()
         .environmentObject(AppState())
 }
+#endif

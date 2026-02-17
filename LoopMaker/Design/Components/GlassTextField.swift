@@ -70,6 +70,7 @@ struct GlassTextField: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     ZStack {
         Theme.background.ignoresSafeArea()
@@ -90,3 +91,4 @@ struct GlassTextField: View {
         .padding(Spacing.xl)
     }
 }
+#endif

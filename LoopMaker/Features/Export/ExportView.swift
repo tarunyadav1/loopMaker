@@ -166,9 +166,10 @@ struct ExportView: View {
         panel.canCreateDirectories = true
 
         panel.begin { response in
-            defer { isExporting = false }
-
-            guard response == .OK, let url = panel.url else { return }
+            guard response == .OK, let url = panel.url else {
+                isExporting = false
+                return
+            }
 
             if selectedFormat == .wav {
                 do {
@@ -176,8 +177,10 @@ struct ExportView: View {
                         try FileManager.default.removeItem(at: url)
                     }
                     try FileManager.default.copyItem(at: track.audioURL, to: url)
+                    isExporting = false
                     dismiss()
                 } catch {
+                    isExporting = false
                     showExportError(error, context: "WAV export")
                     Log.export.error("WAV export error: \(error.localizedDescription)")
                 }
@@ -188,34 +191,31 @@ struct ExportView: View {
     }
 
     private func convertToM4A(from source: URL, to destination: URL) {
-        let asset = AVAsset(url: source)
-        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            showExportError(nil, context: "M4A export")
-            Log.export.error("Failed to create AVAssetExportSession")
-            isExporting = false
-            return
-        }
+        Task {
+            let asset = AVURLAsset(url: source)
+            guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+                await MainActor.run {
+                    showExportError(nil, context: "M4A export")
+                    Log.export.error("Failed to create AVAssetExportSession")
+                    isExporting = false
+                }
+                return
+            }
 
-        // Remove destination if it already exists (export session won't overwrite)
-        try? FileManager.default.removeItem(at: destination)
+            // Remove destination if it already exists (export session won't overwrite)
+            try? FileManager.default.removeItem(at: destination)
 
-        session.outputURL = destination
-        session.outputFileType = .m4a
-
-        session.exportAsynchronously {
-            DispatchQueue.main.async {
-                self.isExporting = false
-                switch session.status {
-                case .completed:
-                    self.dismiss()
-                case .failed:
-                    self.showExportError(session.error, context: "M4A export")
-                    Log.export.error("M4A export failed: \(session.error?.localizedDescription ?? "unknown")")
-                case .cancelled:
-                    self.showExportError(nil, context: "M4A export was cancelled")
-                    Log.export.error("M4A export cancelled")
-                default:
-                    break
+            do {
+                try await session.export(to: destination, as: .m4a)
+                await MainActor.run {
+                    isExporting = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isExporting = false
+                    showExportError(error, context: "M4A export")
+                    Log.export.error("M4A export failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -283,6 +283,7 @@ struct FormatOptionCard: View {
     }
 }
 
+#if PREVIEWS
 #Preview {
     ExportView(track: Track(
         prompt: "Chill lo-fi beats with vinyl crackle",
@@ -291,3 +292,4 @@ struct FormatOptionCard: View {
         audioURL: URL(fileURLWithPath: "/tmp/test.wav")
     ))
 }
+#endif

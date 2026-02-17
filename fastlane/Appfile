@@ -3,4 +3,4 @@
 
 app_identifier(ENV["APP_IDENTIFIER"] || "com.loopmaker.LoopMaker")
 apple_id(ENV["APPLE_ID"] || "your@email.com")
-team_id(ENV["TEAM_ID"] || "YOUR_TEAM_ID")
+team_id(ENV["TEAM_ID"] || "2M3JKYS79P")

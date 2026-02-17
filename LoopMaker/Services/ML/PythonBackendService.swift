@@ -215,7 +215,7 @@ public final class PythonBackendService: ObservableObject {
     /// Download a model via Python backend
     public func downloadModel(
         _ model: ModelType,
-        progressHandler: @escaping (Double) -> Void
+        progressHandler: @escaping (Double, String?) -> Void
     ) async throws {
         let url = baseURL.appendingPathComponent("models/download")
 
@@ -240,7 +240,8 @@ public final class PythonBackendService: ObservableObject {
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 if let progress = json["progress"] as? Double {
                     lastProgress = progress
-                    progressHandler(progress)
+                    let message = json["message"] as? String
+                    progressHandler(progress, message)
                 }
                 if let status = json["status"] as? String, status == "error",
                    let error = json["error"] as? String {

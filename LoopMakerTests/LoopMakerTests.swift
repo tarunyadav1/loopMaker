@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 @testable import LoopMaker
 
@@ -96,7 +97,7 @@ final class LoopMakerTests: XCTestCase {
     // MARK: - Generation Request Tests
 
     func testGenerationRequestFullPrompt() {
-        // fullPrompt returns the prompt directly (genre is pre-applied by the UI)
+        // fullPrompt adds a language directive when lyrics imply a specific language.
         let requestWithGenre = GenerationRequest(
             prompt: "chill beats",
             duration: .medium,
@@ -105,13 +106,15 @@ final class LoopMakerTests: XCTestCase {
 
         XCTAssertEqual(requestWithGenre.fullPrompt, "chill beats")
 
-        let requestWithoutGenre = GenerationRequest(
-            prompt: "epic music",
+        let hindiRequest = GenerationRequest(
+            prompt: "bollywood romantic ballad",
             duration: .long,
+            lyrics: "[verse]\ndil ki baat tu samajh le",
             genre: nil
         )
 
-        XCTAssertEqual(requestWithoutGenre.fullPrompt, "epic music")
+        XCTAssertTrue(hindiRequest.fullPrompt.contains("Vocal language: Hindi"))
+        XCTAssertTrue(hindiRequest.fullPrompt.contains("bollywood romantic ballad"))
     }
 
     func testGenerationRequestACEStepParams() {
@@ -134,6 +137,54 @@ final class LoopMakerTests: XCTestCase {
             duration: .long
         )
         XCTAssertEqual(instrumentalRequest.effectiveLyrics, "[inst]")
+    }
+
+    func testGenerationRequestLanguageHintDetection() {
+        let hindiFromPrompt = GenerationRequest(
+            prompt: "bollywood track in hindi",
+            duration: .medium,
+            lyrics: "[verse]\ntera dil mera dil"
+        )
+        XCTAssertEqual(hindiFromPrompt.languageHint, .hindi)
+
+        let spanishFromMarkers = GenerationRequest(
+            prompt: "latin pop track",
+            duration: .medium,
+            lyrics: "[verse]\ncorazon y sueno en la noche"
+        )
+        XCTAssertEqual(spanishFromMarkers.languageHint, .spanish)
+
+        let koreanFromPrompt = GenerationRequest(
+            prompt: "k-pop dance anthem",
+            duration: .medium,
+            lyrics: "[verse]\nmodeun geot-i bichna"
+        )
+        XCTAssertEqual(koreanFromPrompt.languageHint, .korean)
+
+        let multiLanguage = GenerationRequest(
+            prompt: "multilingual pop with hindi and english sections",
+            duration: .medium,
+            lyrics: "[chorus]\nhello dil se bolo"
+        )
+        XCTAssertEqual(multiLanguage.languageHint, .multilingual)
+    }
+
+    func testGenerationRequestLanguageHintSkippedForInstrumentalAndKeepVocals() {
+        let instrumental = GenerationRequest(
+            prompt: "hindi pop",
+            duration: .medium,
+            lyrics: nil
+        )
+        XCTAssertNil(instrumental.languageHint)
+
+        let keepVocalsCover = GenerationRequest(
+            prompt: "spanish reggaeton cover",
+            duration: .medium,
+            lyrics: "",
+            taskType: .cover
+        )
+        XCTAssertNil(keepVocalsCover.languageHint)
+        XCTAssertEqual(keepVocalsCover.fullPrompt, "spanish reggaeton cover")
     }
 
     // MARK: - Track Tests
@@ -191,3 +242,4 @@ final class LoopMakerTests: XCTestCase {
         XCTAssertFalse(ModelDownloadState.error("test").isDownloading)
     }
 }
+#endif

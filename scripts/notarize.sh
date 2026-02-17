@@ -21,6 +21,8 @@ NC='\033[0m'
 
 echo -e "${GREEN}Notarizing ${APP_NAME}...${NC}"
 
+TEAM_ID="${TEAM_ID:-${APPLE_TEAM_ID:-2M3JKYS79P}}"
+
 # Check for required environment variables
 if [ -z "$APPLE_ID" ]; then
     echo -e "${RED}Error: APPLE_ID environment variable not set${NC}"

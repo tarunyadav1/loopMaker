@@ -202,7 +202,9 @@ struct SidebarNavButton: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     NewSidebarView(selection: .constant(.generate))
         .frame(height: 600)
 }
+#endif

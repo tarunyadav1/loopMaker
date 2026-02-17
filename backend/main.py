@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import queue
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -90,8 +91,16 @@ MODEL_REGISTRY = {
 _handler = None
 _handler_initialized = False
 
-# Shared output directory (must match Swift's track storage path)
-TRACKS_DIR = Path.home() / "Library" / "Application Support" / "LoopMaker" / "tracks"
+# Writable app support directory (avoid writing into the signed .app bundle).
+APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "LoopMaker"
+APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ACE-Step expects checkpoints under "<project_root>/checkpoints".
+CHECKPOINTS_DIR = APP_SUPPORT_DIR / "checkpoints"
+CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Shared output directory (must match Swift's track storage path).
+TRACKS_DIR = APP_SUPPORT_DIR / "tracks"
 TRACKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -121,6 +130,7 @@ class GenerationResponse(BaseModel):
     audio_path: str  # path to generated WAV file
     sample_rate: int
     duration: float
+    seed: Optional[int] = None
 
 
 class DownloadRequest(BaseModel):
@@ -153,7 +163,7 @@ def _load_handler():
 
     try:
         from acestep.handler import AceStepHandler
-        from acestep.model_downloader import ensure_main_model, get_checkpoints_dir
+        from acestep.model_downloader import ensure_main_model, download_main_model
     except ImportError:
         raise ImportError(
             "Music engine components not installed. Please reinstall the application."
@@ -164,10 +174,32 @@ def _load_handler():
 
     # Ensure model weights are downloaded (idempotent — returns immediately if present)
     print("Ensuring ACE-Step v1.5 model weights are available...")
-    success, message = ensure_main_model()
+    success, message = ensure_main_model(CHECKPOINTS_DIR)
     print(f"Model check: {message}")
     if not success:
         raise RuntimeError(f"Failed to download required files: {message}")
+
+    # The upstream check only verifies directories exist, not that weight files
+    # are present. Verify the actual model weights exist and force re-download
+    # if the checkpoint directory is incomplete.
+    _WEIGHT_FILENAMES = [
+        "model.safetensors", "pytorch_model.bin",
+        "model.safetensors.index.json", "pytorch_model.bin.index.json",
+    ]
+    turbo_dir = CHECKPOINTS_DIR / "acestep-v15-turbo"
+    has_weights = any((turbo_dir / f).exists() for f in _WEIGHT_FILENAMES)
+    if not has_weights:
+        print("Weight files missing in acestep-v15-turbo — forcing re-download...")
+        success, message = download_main_model(CHECKPOINTS_DIR, force=True)
+        print(f"Re-download result: {message}")
+        if not success:
+            raise RuntimeError(f"Failed to download model weights: {message}")
+        has_weights = any((turbo_dir / f).exists() for f in _WEIGHT_FILENAMES)
+        if not has_weights:
+            raise RuntimeError(
+                "Model download completed but weight files are still missing in "
+                f"{turbo_dir}. Please delete the checkpoints directory and retry."
+            )
 
     # Initialize handler
     # Force CPU for PyTorch components on macOS — MPS has fatal Metal shader bugs
@@ -178,8 +210,24 @@ def _load_handler():
 
     print(f"Initializing ACE-Step v1.5 handler (device={device})...")
     _handler = AceStepHandler()
+
+    # ACE-Step derives its "project root" from where the package lives, which in a
+    # release build is inside the signed .app bundle. Force all checkpoints/cache
+    # writes into Application Support so the app isn't self-modifying.
+    _handler._get_project_root = lambda: str(APP_SUPPORT_DIR)  # type: ignore[attr-defined]
+    _handler._progress_estimates_path = os.path.join(  # type: ignore[attr-defined]
+        str(APP_SUPPORT_DIR),
+        ".cache",
+        "acestep",
+        "progress_estimates.json",
+    )
+    try:
+        _handler._load_progress_estimates()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     status, enabled = _handler.initialize_service(
-        project_root=str(get_checkpoints_dir()),
+        project_root=str(APP_SUPPORT_DIR),
         config_path="acestep-v15-turbo",
         device=device,
         offload_to_cpu=True,
@@ -220,7 +268,7 @@ async def get_model_status():
         if name == "acestep" and not is_downloaded:
             try:
                 from acestep.model_downloader import check_main_model_exists
-                is_downloaded = check_main_model_exists()
+                is_downloaded = check_main_model_exists(CHECKPOINTS_DIR)
             except ImportError:
                 is_downloaded = False
 
@@ -312,9 +360,15 @@ ProgressCallback = Callable[[float, str], None]
 _executor = ThreadPoolExecutor(max_workers=2)
 
 
+class GenerationCancelledError(Exception):
+    """Raised when the client cancels an in-flight generation."""
+    pass
+
+
 def _generate_acestep_sync(
     request: GenerationRequest,
     progress_cb: ProgressCallback,
+    cancel_event: Optional[threading.Event] = None,
 ) -> list[GenerationResponse]:
     """Synchronous ACE-Step v1.5 generation with progress callbacks.
 
@@ -322,11 +376,17 @@ def _generate_acestep_sync(
     Supports text2music and cover (audio2audio) task types.
     Returns a list of GenerationResponse (one per batch item).
     """
+    def _throw_if_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise GenerationCancelledError("Generation cancelled by user")
+
     # Clear MPS cache before generation
     _clear_mps_cache()
 
+    _throw_if_cancelled()
     progress_cb(0.05, "Loading music engine...")
     handler = _load_handler()
+    _throw_if_cancelled()
 
     # Quality mode determines inference steps
     if request.quality_mode == "draft":
@@ -366,6 +426,10 @@ def _generate_acestep_sync(
             duration = 30.0  # fallback
 
     batch_size = max(1, min(request.batch_size, 8))
+    if request.seed is not None:
+        effective_seed = int(request.seed) & 0x7FFFFFFF
+    else:
+        effective_seed = int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF
 
     # Build enriched caption with music metadata tags
     caption_parts = []
@@ -379,6 +443,7 @@ def _generate_acestep_sync(
     caption = f"{caption_prefix}. {request.prompt}" if caption_prefix else request.prompt
 
     progress_cb(0.10, "Preparing generation parameters...")
+    _throw_if_cancelled()
 
     try:
         if is_cover:
@@ -393,6 +458,7 @@ def _generate_acestep_sync(
 
         # Native progress callback: maps handler's 0.0-1.0 range to 0.15-0.85
         def _progress_bridge(val: float, desc: str):
+            _throw_if_cancelled()
             mapped = 0.15 + val * 0.70
             progress_cb(mapped, f"{task_label} ({desc})...")
 
@@ -426,8 +492,8 @@ def _generate_acestep_sync(
             instruction=instruction,
             reference_audio=request.source_audio_path if is_cover else None,
             batch_size=batch_size,
-            seed=request.seed if request.seed is not None else -1,
-            use_random_seed=(request.seed is None),
+            seed=effective_seed,
+            use_random_seed=False,
             progress=_progress_bridge,
         )
 
@@ -438,6 +504,7 @@ def _generate_acestep_sync(
                 gen_kwargs["repainting_end"] = request.repainting_end
 
         result = handler.generate_music(**gen_kwargs)
+        _throw_if_cancelled()
 
         print(f"Handler returned in {_time.time() - _t0:.1f}s")
 
@@ -455,6 +522,7 @@ def _generate_acestep_sync(
 
         responses = []
         for i, audio_dict in enumerate(audios):
+            _throw_if_cancelled()
             audio_tensor = audio_dict["tensor"]  # [channels, samples], float32
             sample_rate = audio_dict["sample_rate"]  # 48000
 
@@ -493,6 +561,7 @@ def _generate_acestep_sync(
                 audio_path=str(final_path),
                 sample_rate=sample_rate,
                 duration=duration_secs,
+                seed=effective_seed,
             ))
 
         print(f"Returning {len(responses)} response(s)")
@@ -532,6 +601,8 @@ async def generate_acestep_http(request: GenerationRequest) -> GenerationRespons
 async def ws_generate(websocket: WebSocket):
     """WebSocket endpoint for generation with real-time progress."""
     await websocket.accept()
+    cancel_event = threading.Event()
+    gen_future = None
 
     try:
         # 1. Receive generation request from client
@@ -598,7 +669,7 @@ async def ws_generate(websocket: WebSocket):
 
         # 3. Run generation in thread pool
         loop = asyncio.get_event_loop()
-        gen_future = loop.run_in_executor(_executor, _generate_acestep_sync, request, progress_cb)
+        gen_future = loop.run_in_executor(_executor, _generate_acestep_sync, request, progress_cb, cancel_event)
 
         # 4. Forward progress messages and send heartbeats while waiting
         while True:
@@ -649,18 +720,24 @@ async def ws_generate(websocket: WebSocket):
             "durations": [r.duration for r in results],
         }
         # Include the seed that was actually used (useful when random seed was generated)
-        if hasattr(results[0], 'seed') and results[0].seed is not None:
+        if results[0].seed is not None:
             complete_msg["seed"] = results[0].seed
         await websocket.send_json(complete_msg)
         print("WebSocket: complete message sent successfully")
 
+    except GenerationCancelledError:
+        print("WebSocket: generation cancelled")
     except WebSocketDisconnect:
-        # Client disconnected (e.g. cancelled) - nothing to do
-        print("WebSocket: client disconnected")
+        # Client disconnected (e.g. cancelled) - request cooperative cancellation.
+        print("WebSocket: client disconnected, requesting cancellation")
+        cancel_event.set()
+        if gen_future is not None and not gen_future.done():
+            gen_future.cancel()
     except Exception as e:
         import traceback
         print(f"WebSocket generation error: {e}")
         traceback.print_exc()
+        cancel_event.set()
         try:
             await websocket.send_json({"type": "error", "detail": str(e)})
         except Exception:

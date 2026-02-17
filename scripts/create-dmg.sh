@@ -27,6 +27,9 @@ fi
 STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
+# Locate the app icon (.icns) for the DMG volume icon
+APP_ICNS="$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
 echo -e "${YELLOW}  Preparing DMG contents...${NC}"
 
 # Copy the .app to the staging directory
@@ -40,14 +43,65 @@ rm -f "$OUTPUT_DMG"
 
 echo -e "${YELLOW}  Creating compressed DMG...${NC}"
 
-# Create the DMG
-# UDZO = compressed (zlib), good balance of size and compatibility
+# Create a temporary read-write DMG first (needed to set volume icon and Finder layout)
+TEMP_DMG="$(mktemp -u).dmg"
+
 hdiutil create \
     -volname "$VOLUME_NAME" \
     -srcfolder "$STAGING_DIR" \
     -ov \
+    -format UDRW \
+    "$TEMP_DMG"
+
+# Mount the temporary DMG to configure it
+MOUNT_DIR="/Volumes/$VOLUME_NAME"
+
+# Detach any existing volume with the same name
+hdiutil detach "$MOUNT_DIR" 2>/dev/null || true
+
+hdiutil attach "$TEMP_DMG" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+
+# Set volume icon if the .icns exists
+if [ -f "$APP_ICNS" ]; then
+    echo -e "${YELLOW}  Setting volume icon...${NC}"
+    cp "$APP_ICNS" "$MOUNT_DIR/.VolumeIcon.icns"
+    SetFile -c icnC "$MOUNT_DIR/.VolumeIcon.icns"
+    SetFile -a C "$MOUNT_DIR"
+fi
+
+# Configure Finder window layout via AppleScript
+APP_BASENAME="$(basename "$APP_BUNDLE")"
+echo -e "${YELLOW}  Configuring DMG layout...${NC}"
+osascript <<APPLESCRIPT
+tell application "Finder"
+    tell disk "$VOLUME_NAME"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set the bounds of container window to {100, 100, 640, 400}
+        set viewOptions to the icon view options of container window
+        set arrangement of viewOptions to not arranged
+        set icon size of viewOptions to 96
+        set position of item "$APP_BASENAME" of container window to {140, 150}
+        set position of item "Applications" of container window to {400, 150}
+        close
+    end tell
+end tell
+APPLESCRIPT
+
+# Ensure Finder writes .DS_Store
+sync
+sleep 1
+
+hdiutil detach "$MOUNT_DIR" -quiet
+
+# Convert to compressed read-only DMG
+hdiutil convert "$TEMP_DMG" \
     -format UDZO \
     -imagekey zlib-level=9 \
-    "$OUTPUT_DMG"
+    -o "$OUTPUT_DMG"
+
+rm -f "$TEMP_DMG"
 
 echo -e "${GREEN}  DMG created: $OUTPUT_DMG${NC}"

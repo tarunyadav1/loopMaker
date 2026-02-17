@@ -119,6 +119,7 @@ struct GenreCard: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     ZStack {
         Theme.background.ignoresSafeArea()
@@ -131,3 +132,4 @@ struct GenreCard: View {
         .padding()
     }
 }
+#endif

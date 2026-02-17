@@ -425,6 +425,7 @@ struct PlayerControlButton: View {
 
 // MARK: - Preview
 
+#if PREVIEWS
 #Preview {
     VStack {
         Spacer()
@@ -441,3 +442,4 @@ struct PlayerControlButton: View {
         )
     }
 }
+#endif
