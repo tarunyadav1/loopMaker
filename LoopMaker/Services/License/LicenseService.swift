@@ -335,26 +335,36 @@ final class LicenseService: ObservableObject {
     private func storeLicenseKey(_ key: String) throws {
         let data = key.data(using: .utf8)!
 
-        // Delete existing item first
-        let deleteQuery: [String: Any] = [
+        // Try to update existing item first
+        let searchQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainAccount
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
-
-        // Add new item
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
+        let updateAttributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
         ]
 
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        var status = SecItemUpdate(searchQuery as CFDictionary, updateAttributes as CFDictionary)
+
+        if status == errSecItemNotFound {
+            // No existing item, add a new one
+            let addQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: keychainService,
+                kSecAttrAccount as String: keychainAccount,
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+            ]
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+
         if status != errSecSuccess {
-            throw LicenseError.serverError("Failed to store license key")
+            Log.app.error("Keychain store failed with OSStatus: \(status)")
+            // Fall back to UserDefaults storage so activation isn't blocked
+            UserDefaults.standard.set(key, forKey: "\(keychainService).fallback")
+            Log.app.info("License key stored in UserDefaults fallback")
         }
     }
 
@@ -372,7 +382,9 @@ final class LicenseService: ObservableObject {
         if status == errSecSuccess, let data = result as? Data {
             return String(data: data, encoding: .utf8)
         }
-        return nil
+
+        // Check UserDefaults fallback
+        return UserDefaults.standard.string(forKey: "\(keychainService).fallback")
     }
 
     private func deleteLicenseKey() {
@@ -382,6 +394,7 @@ final class LicenseService: ObservableObject {
             kSecAttrAccount as String: keychainAccount
         ]
         SecItemDelete(query as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: "\(keychainService).fallback")
     }
 
     // MARK: - Local Storage
