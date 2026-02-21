@@ -298,15 +298,26 @@ struct SetupOverlay: View {
 
                 // App branding
                 VStack(spacing: 20) {
-                    Image(systemName: "waveform.circle.fill")
-                        .font(.system(size: 72))
-                        .foregroundStyle(.linearGradient(
-                            colors: [DesignSystem.Colors.accent, DesignSystem.Colors.accentHover],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .symbolEffect(.pulse, options: .repeating)
-                        .shadow(color: DesignSystem.Colors.accent.opacity(0.3), radius: 20)
+                    Group {
+                        if let iconURL = Bundle.main.url(forResource: "logo-loopmaker", withExtension: "png"),
+                           let nsImage = NSImage(contentsOf: iconURL) {
+                            Image(nsImage: nsImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 96, height: 96)
+                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                .shadow(color: DesignSystem.Colors.accent.opacity(0.3), radius: 20)
+                        } else {
+                            Image(systemName: "waveform.circle.fill")
+                                .font(.system(size: 72))
+                                .foregroundStyle(.linearGradient(
+                                    colors: [DesignSystem.Colors.accent, DesignSystem.Colors.accentHover],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ))
+                                .shadow(color: DesignSystem.Colors.accent.opacity(0.3), radius: 20)
+                        }
+                    }
 
                     VStack(spacing: 6) {
                         Text("LoopMaker")

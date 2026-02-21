@@ -173,6 +173,16 @@ sign_app_bundle() {
   # Remove python.o (LLVM bitcode wrapper) - can't be properly notarized
   find "$APP_BUNDLE" -name "python.o" -delete 2>/dev/null && print_status "Removed python.o (LLVM bitcode, not notarizable)" || true
 
+  # Remove AppleDouble/resource fork files (._*) that break code signatures.
+  # These get embedded in Python.framework and invalidate sealed resources.
+  print_status "Cleaning resource forks and caches from app bundle..."
+  find "$APP_BUNDLE" -name '._*' -delete 2>/dev/null || true
+  find "$APP_BUNDLE" -name '.__*' -delete 2>/dev/null || true
+  find "$APP_BUNDLE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$APP_BUNDLE" -name '*.pyc' -delete 2>/dev/null || true
+  dot_clean "$APP_BUNDLE" 2>/dev/null || true
+  xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+
   # Sign executable files first (inside-out order)
   while IFS= read -r binary; do
     if file "$binary" | grep -q "Mach-O"; then
