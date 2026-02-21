@@ -63,3 +63,8 @@ Categories: `app`, `ui`, `audio`, `ml`, `generation`, `data`, `performance`, `ex
 **Threading**: Views and state classes use `@MainActor`. Async work uses structured concurrency.
 
 **Linting**: Line length 120 (warn), 150 (error). Function body max 50 lines. No bare `print()` statements.
+
+
+notization cred for the app
+email: tarunyadav9761@gmail.com
+password: wfye-jivf-htsy-gkne

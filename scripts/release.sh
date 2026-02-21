@@ -170,6 +170,9 @@ sign_app_bundle() {
   local entitlements="LoopMaker/LoopMaker.entitlements"
   local pythonEntitlements="scripts/python-dyld.entitlements"
 
+  # Remove python.o (LLVM bitcode wrapper) - can't be properly notarized
+  find "$APP_BUNDLE" -name "python.o" -delete 2>/dev/null && print_status "Removed python.o (LLVM bitcode, not notarizable)" || true
+
   # Sign executable files first (inside-out order)
   while IFS= read -r binary; do
     if file "$binary" | grep -q "Mach-O"; then
@@ -179,7 +182,7 @@ sign_app_bundle() {
         codesign --force --timestamp --options runtime --sign "$SIGNING_IDENTITY" "$binary"
       fi
     fi
-  done < <(find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -111 \))
+  done < <(find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.o" -o -name "*.a" -o -perm -111 \))
 
   # Sign nested bundles and frameworks (inside-out: .app/.xpc first, then .framework)
   while IFS= read -r bundle; do
