@@ -61,7 +61,7 @@ struct LicenseGateView: View {
                 }
             }
             .frame(width: 380)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.extraLarge))
+            .compatGlassEffect(cornerRadius: DesignSystem.CornerRadius.extraLarge)
             .shadow(color: DesignSystem.Shadows.medium, radius: 30, y: 10)
         }
         .frame(minWidth: 700, minHeight: 550)

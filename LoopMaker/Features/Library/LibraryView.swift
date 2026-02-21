@@ -555,9 +555,10 @@ struct ViewModeButton: View {
                     Group {
                         if isSelected {
                             RoundedRectangle(cornerRadius: Spacing.radiusSm)
-                                .glassEffect(
-                                    .regular.tint(Theme.accentPrimary.opacity(0.16)).interactive(),
-                                    in: RoundedRectangle(cornerRadius: Spacing.radiusSm)
+                                .compatGlassEffect(
+                                    cornerRadius: Spacing.radiusSm,
+                                    tint: Theme.accentPrimary.opacity(0.16),
+                                    interactive: true
                                 )
                         } else {
                             RoundedRectangle(cornerRadius: Spacing.radiusSm)
@@ -593,9 +594,9 @@ struct FilterChip: View {
                     Group {
                         if isSelected {
                             Capsule()
-                                .glassEffect(
-                                    .regular.tint(Theme.accentPrimary.opacity(0.16)).interactive(),
-                                    in: Capsule()
+                                .compatGlassCapsule(
+                                    tint: Theme.accentPrimary.opacity(0.16),
+                                    interactive: true
                                 )
                         } else {
                             Capsule()

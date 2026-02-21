@@ -20,10 +20,7 @@ struct GlassCard<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .glassEffect(
-                .regular,
-                in: .rect(cornerRadius: cornerRadius)
-            )
+            .compatGlassRect(cornerRadius: cornerRadius)
     }
 }
 
@@ -34,7 +31,7 @@ struct GlassBackgroundModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            .compatGlassRect(cornerRadius: cornerRadius)
     }
 }
 

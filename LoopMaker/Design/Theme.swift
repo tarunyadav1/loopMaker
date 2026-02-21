@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// LoopMaker Design System for macOS 26+ (Tahoe)
-/// Liquid Glass design with unified muted purple accent
+/// LoopMaker Design System
+/// Liquid Glass design with unified muted purple accent (glass on macOS 26+, material fallback on 14+)
 enum DesignSystem {
     // MARK: - Colors
     enum Colors {
@@ -364,9 +364,10 @@ struct GlassButtonBackground: ViewModifier {
                 .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium))
         case .secondary:
             content
-                .glassEffect(
-                    .regular.tint(DesignSystem.Colors.accent).interactive(),
-                    in: RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
+                .compatGlassEffect(
+                    cornerRadius: DesignSystem.CornerRadius.medium,
+                    tint: DesignSystem.Colors.accent,
+                    interactive: true
                 )
         case .ghost:
             content
@@ -374,9 +375,10 @@ struct GlassButtonBackground: ViewModifier {
                 .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium))
         case .danger:
             content
-                .glassEffect(
-                    .regular.tint(DesignSystem.Colors.error).interactive(),
-                    in: RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.medium)
+                .compatGlassEffect(
+                    cornerRadius: DesignSystem.CornerRadius.medium,
+                    tint: DesignSystem.Colors.error,
+                    interactive: true
                 )
         }
     }
@@ -446,10 +448,10 @@ struct IconButtonBackground: ViewModifier {
     func body(content: Content) -> some View {
         if isActive {
             content
-                .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .circle)
+                .compatGlassCircle(tint: DesignSystem.Colors.accent, interactive: true)
         } else {
             content
-                .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .circle)
+                .compatGlassCircle(tint: DesignSystem.Colors.accent, interactive: true)
         }
     }
 }
@@ -562,63 +564,163 @@ struct SidebarItemModifier: ViewModifier {
     }
 }
 
-// MARK: - Native Liquid Glass View Extensions (macOS 26+)
+// MARK: - Glass Compatibility Helpers (macOS 26+ glass, 14+ material fallback)
+
+extension View {
+    @ViewBuilder
+    func compatGlassEffect(
+        cornerRadius: CGFloat = DesignSystem.CornerRadius.large,
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false
+    ) -> some View {
+        if #available(macOS 26, *) {
+            if clear {
+                self.glassEffect(.clear, in: RoundedRectangle(cornerRadius: cornerRadius))
+            } else if let tint {
+                if interactive {
+                    self.glassEffect(.regular.tint(tint).interactive(), in: RoundedRectangle(cornerRadius: cornerRadius))
+                } else {
+                    self.glassEffect(.regular.tint(tint), in: RoundedRectangle(cornerRadius: cornerRadius))
+                }
+            } else {
+                self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            }
+        } else {
+            self.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+        }
+    }
+
+    @ViewBuilder
+    func compatGlassCircle(tint: Color? = nil, interactive: Bool = false) -> some View {
+        if #available(macOS 26, *) {
+            if let tint {
+                if interactive {
+                    self.glassEffect(.regular.tint(tint).interactive(), in: .circle)
+                } else {
+                    self.glassEffect(.regular.tint(tint), in: .circle)
+                }
+            } else {
+                self.glassEffect(.regular, in: .circle)
+            }
+        } else {
+            self.background(.ultraThinMaterial, in: Circle())
+        }
+    }
+
+    @ViewBuilder
+    func compatGlassCapsule(tint: Color? = nil, interactive: Bool = false, clear: Bool = false) -> some View {
+        if #available(macOS 26, *) {
+            if clear {
+                self.glassEffect(.clear, in: .capsule)
+            } else if let tint {
+                if interactive {
+                    self.glassEffect(.regular.tint(tint).interactive(), in: .capsule)
+                } else {
+                    self.glassEffect(.regular.tint(tint), in: .capsule)
+                }
+            } else {
+                self.glassEffect(.regular, in: .capsule)
+            }
+        } else {
+            self.background(.ultraThinMaterial, in: Capsule())
+        }
+    }
+
+    @ViewBuilder
+    func compatGlassRect(
+        cornerRadius: CGFloat = DesignSystem.CornerRadius.medium,
+        tint: Color? = nil,
+        interactive: Bool = false
+    ) -> some View {
+        if #available(macOS 26, *) {
+            if let tint {
+                if interactive {
+                    self.glassEffect(.regular.tint(tint).interactive(), in: .rect(cornerRadius: cornerRadius))
+                } else {
+                    self.glassEffect(.regular.tint(tint), in: .rect(cornerRadius: cornerRadius))
+                }
+            } else {
+                self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            }
+        } else {
+            self.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+        }
+    }
+
+    @ViewBuilder
+    func compatGlassEffectPlain() -> some View {
+        if #available(macOS 26, *) {
+            self.glassEffect()
+        } else {
+            self.background(.ultraThinMaterial)
+        }
+    }
+
+    @ViewBuilder
+    func compatGlassEffectID(_ id: String, in namespace: Namespace.ID) -> some View {
+        if #available(macOS 26, *) {
+            self.glassEffectID(id, in: namespace)
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - Native Liquid Glass View Extensions
 
 extension View {
     func liquidGlassCard(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
             .padding(DesignSystem.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .compatGlassEffect(cornerRadius: cornerRadius)
     }
 
     func liquidGlassCardInteractive(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
             .padding(DesignSystem.Spacing.lg)
-            .glassEffect(
-                .regular.tint(DesignSystem.Colors.accent).interactive(),
-                in: RoundedRectangle(cornerRadius: cornerRadius)
-            )
+            .compatGlassEffect(cornerRadius: cornerRadius, tint: DesignSystem.Colors.accent, interactive: true)
     }
 
     func liquidGlassTinted(_ color: Color, cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
             .padding(DesignSystem.Spacing.lg)
-            .glassEffect(.regular.tint(color), in: RoundedRectangle(cornerRadius: cornerRadius))
+            .compatGlassEffect(cornerRadius: cornerRadius, tint: color)
     }
 
     func liquidGlassClear(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
-            .glassEffect(.clear, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .compatGlassEffect(cornerRadius: cornerRadius, clear: true)
     }
 
     func liquidGlassPill() -> some View {
         self
-            .glassEffect(.regular, in: .capsule)
+            .compatGlassCapsule()
     }
 
     func liquidGlassPillInteractive() -> some View {
         self
-            .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .capsule)
+            .compatGlassCapsule(tint: DesignSystem.Colors.accent, interactive: true)
     }
 
     func liquidGlassCircle() -> some View {
         self
-            .glassEffect(.regular, in: .circle)
+            .compatGlassCircle()
     }
 
     func liquidGlassCircleInteractive() -> some View {
         self
-            .glassEffect(.regular.tint(DesignSystem.Colors.accent).interactive(), in: .circle)
+            .compatGlassCircle(tint: DesignSystem.Colors.accent, interactive: true)
     }
 
     func glassCard(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .compatGlassEffect(cornerRadius: cornerRadius)
     }
 
     func solidCard(cornerRadius: CGFloat = DesignSystem.CornerRadius.large) -> some View {
         self
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .compatGlassEffect(cornerRadius: cornerRadius)
             .shadow(color: DesignSystem.Shadows.subtle, radius: 8, y: 2)
     }
 
@@ -669,7 +771,7 @@ extension View {
 
     func floatingWindowStyle() -> some View {
         self
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.extraLarge))
+            .compatGlassEffect(cornerRadius: DesignSystem.CornerRadius.extraLarge)
             .shadow(color: DesignSystem.Shadows.medium, radius: 24, y: 8)
     }
 
@@ -690,7 +792,7 @@ struct HoverCardModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .compatGlassEffect(cornerRadius: cornerRadius)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .stroke(isHovered ? DesignSystem.Colors.accent.opacity(0.2) : Color.clear, lineWidth: 1)
@@ -861,7 +963,7 @@ struct KeyboardHint: View {
     }
 }
 
-// MARK: - Glass Effect Container (macOS 26+)
+// MARK: - Glass Effect Container (macOS 26+ glass, material fallback)
 
 struct LoopMakerGlassEffectContainer<Content: View>: View {
     let spacing: CGFloat
@@ -876,7 +978,7 @@ struct LoopMakerGlassEffectContainer<Content: View>: View {
         VStack(spacing: spacing) {
             content
         }
-        .glassEffect()
+        .compatGlassEffectPlain()
     }
 }
 
@@ -890,8 +992,14 @@ struct LoopMakerGlassContainer<Content: View>: View {
     }
 
     var body: some View {
-        SwiftUI.GlassEffectContainer(spacing: spacing) {
-            content()
+        if #available(macOS 26, *) {
+            SwiftUI.GlassEffectContainer(spacing: spacing) {
+                content()
+            }
+        } else {
+            VStack(spacing: spacing) {
+                content()
+            }
         }
     }
 }

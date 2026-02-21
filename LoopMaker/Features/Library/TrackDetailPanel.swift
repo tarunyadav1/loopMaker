@@ -90,7 +90,7 @@ struct TrackDetailPanel: View {
     // MARK: - Top Bar
 
     private var topBar: some View {
-        GlassEffectContainer(spacing: Spacing.sm) {
+        LoopMakerGlassContainer(spacing: Spacing.sm) {
             HStack(spacing: Spacing.md) {
                 Button {
                     onBack()
@@ -104,10 +104,7 @@ struct TrackDetailPanel: View {
                     .foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .glassEffect(
-                        .regular.tint(Theme.accentPrimary.opacity(0.16)).interactive(),
-                        in: Capsule()
-                    )
+                    .compatGlassCapsule(tint: Theme.accentPrimary.opacity(0.16), interactive: true)
                 }
                 .buttonStyle(.plain)
 
@@ -120,9 +117,9 @@ struct TrackDetailPanel: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(currentTrack.isFavorite ? Theme.error : Theme.textPrimary)
                         .frame(width: 34, height: 34)
-                        .glassEffect(
-                            .regular.tint(currentTrack.isFavorite ? Theme.error.opacity(0.2) : Theme.accentPrimary.opacity(0.12)).interactive(),
-                            in: Circle()
+                        .compatGlassCircle(
+                            tint: currentTrack.isFavorite ? Theme.error.opacity(0.2) : Theme.accentPrimary.opacity(0.12),
+                            interactive: true
                         )
                 }
                 .buttonStyle(.plain)
@@ -332,10 +329,7 @@ struct TrackDetailPanel: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(didCopyPrompt ? Theme.accentPrimary : Theme.textTertiary)
                             .frame(width: 26, height: 26)
-                            .glassEffect(
-                                .regular.tint(Theme.accentPrimary.opacity(0.08)).interactive(),
-                                in: Circle()
-                            )
+                            .compatGlassCircle(tint: Theme.accentPrimary.opacity(0.08), interactive: true)
                     }
                     .buttonStyle(.plain)
                     .help(didCopyPrompt ? "Copied" : "Copy prompt")
@@ -405,7 +399,7 @@ struct TrackDetailPanel: View {
                 Text("Continue")
                     .sectionHeaderStyle()
 
-                GlassEffectContainer(spacing: Spacing.sm) {
+                LoopMakerGlassContainer(spacing: Spacing.sm) {
                     Button {
                         appState.playTrack(currentTrack)
                     } label: {
@@ -480,10 +474,7 @@ struct TrackDetailPanel: View {
         content()
             .padding(Spacing.lg)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(
-                .regular,
-                in: RoundedRectangle(cornerRadius: Spacing.radiusLg)
-            )
+            .compatGlassEffect(cornerRadius: Spacing.radiusLg)
     }
 
     private func actionLabel(title: String, icon: String, trailingIcon: String? = nil) -> some View {
@@ -504,10 +495,7 @@ struct TrackDetailPanel: View {
         .foregroundStyle(Theme.textPrimary)
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-        .glassEffect(
-            .regular.tint(Theme.accentPrimary.opacity(0.14)).interactive(),
-            in: RoundedRectangle(cornerRadius: Spacing.radiusSm)
-        )
+        .compatGlassEffect(cornerRadius: Spacing.radiusSm, tint: Theme.accentPrimary.opacity(0.14), interactive: true)
     }
 
     private func compactActionLabel(title: String, icon: String) -> some View {
@@ -522,10 +510,7 @@ struct TrackDetailPanel: View {
         .foregroundStyle(Theme.textPrimary)
         .frame(maxWidth: .infinity)
         .frame(height: 36)
-        .glassEffect(
-            .regular.tint(Theme.accentPrimary.opacity(0.12)).interactive(),
-            in: RoundedRectangle(cornerRadius: Spacing.radiusSm)
-        )
+        .compatGlassEffect(cornerRadius: Spacing.radiusSm, tint: Theme.accentPrimary.opacity(0.12), interactive: true)
     }
 
     private func utilityLabel(

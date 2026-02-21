@@ -139,7 +139,7 @@ struct MainWindow: View {
                 .frame(height: 12)
 
             // Main tabs with glass effect
-            GlassEffectContainer {
+            LoopMakerGlassContainer {
                 VStack(spacing: 2) {
                     ForEach([AppState.MainSidebarTab.home, .library]) { tab in
                         sidebarButton(tab)
@@ -151,7 +151,7 @@ struct MainWindow: View {
             Spacer()
 
             // Bottom section
-            GlassEffectContainer {
+            LoopMakerGlassContainer {
                 VStack(spacing: 2) {
                     sidebarButton(.settings)
                 }
@@ -245,19 +245,19 @@ struct MainWindow: View {
                             .foregroundColor(appState.selectedHomeContentTab == tab ? .primary : .secondary)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
-                            .glassEffect(
-                                appState.selectedHomeContentTab == tab
-                                    ? .regular.tint(DesignSystem.Colors.accent.opacity(0.2)).interactive()
-                                    : .clear,
-                                in: .capsule
+                            .compatGlassCapsule(
+                                tint: appState.selectedHomeContentTab == tab
+                                    ? DesignSystem.Colors.accent.opacity(0.2) : nil,
+                                interactive: appState.selectedHomeContentTab == tab,
+                                clear: appState.selectedHomeContentTab != tab
                             )
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(4)
-            .glassEffect(.regular, in: .capsule)
-            .glassEffectID("tabs", in: headerNamespace)
+            .compatGlassCapsule()
+            .compatGlassEffectID("tabs", in: headerNamespace)
 
             Spacer()
 
@@ -272,7 +272,7 @@ struct MainWindow: View {
                 .foregroundColor(DesignSystem.Colors.accent)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .glassEffect(.regular, in: .capsule)
+                .compatGlassCapsule()
             }
         }
         .padding(.horizontal, 24)

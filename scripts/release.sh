@@ -53,7 +53,7 @@ ARCHIVE_PATH=""
 FILE_SIZE=""
 VERSION=""
 BUILD_NUMBER=""
-MIN_SYSTEM_VERSION="26.0"
+MIN_SYSTEM_VERSION="14.0"
 SIGNATURE=""
 RELEASE_NOTES="Bug fixes and improvements."
 
@@ -220,7 +220,7 @@ get_version_info() {
   local plist="$APP_BUNDLE/Contents/Info.plist"
   VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")"
   BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")"
-  MIN_SYSTEM_VERSION="$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$plist" 2>/dev/null || echo "26.0")"
+  MIN_SYSTEM_VERSION="$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$plist" 2>/dev/null || echo "14.0")"
   print_status "Version: $VERSION (Build $BUILD_NUMBER)"
 }
 
@@ -274,8 +274,15 @@ notarize_archive() {
     --keychain-profile "$NOTARIZATION_PROFILE" \
     --wait
 
-  print_status "Stapling notarization ticket to app bundle..."
-  xcrun stapler staple "$APP_BUNDLE"
+  if [[ "$RELEASE_FORMAT" == "dmg" ]]; then
+    # For DMG: staple the DMG directly (it was notarized as-is)
+    print_status "Stapling notarization ticket to DMG..."
+    xcrun stapler staple "$ARCHIVE_PATH"
+  else
+    # For ZIP: staple the .app, then recreate ZIP with stapled app
+    print_status "Stapling notarization ticket to app bundle..."
+    xcrun stapler staple "$APP_BUNDLE"
+  fi
 }
 
 recreate_archive_after_stapling() {
@@ -283,12 +290,11 @@ recreate_archive_after_stapling() {
     return
   fi
 
-  print_status "Recreating archive with stapled app..."
-  create_archive
-
-  if [[ "$RELEASE_FORMAT" == "dmg" ]]; then
-    print_status "Stapling DMG..."
-    xcrun stapler staple "$ARCHIVE_PATH"
+  # Only ZIP needs recreation (to include the stapled .app)
+  # DMG was stapled directly in notarize_archive
+  if [[ "$RELEASE_FORMAT" == "zip" ]]; then
+    print_status "Recreating ZIP with stapled app..."
+    create_archive
   fi
 }
 

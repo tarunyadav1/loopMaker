@@ -579,9 +579,10 @@ struct SuggestionCard: View {
             RoundedRectangle(cornerRadius: Spacing.radiusMd, style: .continuous)
                 .fill(Color.primary.opacity(0.03))
         )
-        .glassEffect(
-            .regular.tint(data.gradientColors.last?.opacity(isHovered ? 0.2 : 0.14) ?? DesignSystem.Colors.accent.opacity(0.12)).interactive(),
-            in: RoundedRectangle(cornerRadius: Spacing.radiusMd, style: .continuous)
+        .compatGlassEffect(
+            cornerRadius: Spacing.radiusMd,
+            tint: data.gradientColors.last?.opacity(isHovered ? 0.2 : 0.14) ?? DesignSystem.Colors.accent.opacity(0.12),
+            interactive: true
         )
         .overlay(
             RoundedRectangle(cornerRadius: Spacing.radiusMd, style: .continuous)
@@ -777,9 +778,9 @@ struct SuggestionGrid: View {
             RoundedRectangle(cornerRadius: Spacing.radiusLg, style: .continuous)
                 .fill(Color.primary.opacity(0.025))
         )
-        .glassEffect(
-            .regular.tint(DesignSystem.Colors.accent.opacity(0.06)),
-            in: RoundedRectangle(cornerRadius: Spacing.radiusLg, style: .continuous)
+        .compatGlassEffect(
+            cornerRadius: Spacing.radiusLg,
+            tint: DesignSystem.Colors.accent.opacity(0.06)
         )
         .overlay(
             RoundedRectangle(cornerRadius: Spacing.radiusLg, style: .continuous)

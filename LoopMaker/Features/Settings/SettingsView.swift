@@ -56,7 +56,7 @@ struct SettingsView: View {
                 }
             }
             .padding(4)
-            .glassEffect(in: .capsule)
+            .compatGlassCapsule()
         }
     }
 

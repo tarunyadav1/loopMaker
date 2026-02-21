@@ -42,7 +42,7 @@ struct StatusBarView: View {
     }
 
     private var statusPanel: some View {
-        GlassEffectContainer(spacing: 8) {
+        LoopMakerGlassContainer(spacing: 8) {
             HStack(spacing: 8) {
                 statusItem(icon: "dot.radiowaves.left.and.right", text: backendStatusText, tint: backendStatusColor)
                 cpuStatusItem
@@ -54,7 +54,7 @@ struct StatusBarView: View {
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.primary.opacity(0.04))
         )
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14))
+        .compatGlassEffect(cornerRadius: 14)
     }
 
     @ViewBuilder
@@ -72,7 +72,7 @@ struct StatusBarView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .glassEffect(.regular.tint(tint.opacity(0.2)), in: Capsule())
+        .compatGlassCapsule(tint: tint.opacity(0.2))
 
         if let tooltip, !tooltip.isEmpty {
             item.help(tooltip)

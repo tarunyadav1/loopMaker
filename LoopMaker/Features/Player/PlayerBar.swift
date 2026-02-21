@@ -60,10 +60,7 @@ struct PlayerBar: View {
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
-                        .glassEffect(
-                            .regular.tint(Color.primary.opacity(0.08)),
-                            in: .capsule
-                        )
+                        .compatGlassCapsule(tint: Color.primary.opacity(0.08))
                     }
                     .frame(maxWidth: 260, alignment: .trailing)
                 }
@@ -71,10 +68,7 @@ struct PlayerBar: View {
                 .padding(.bottom, Spacing.md)
             }
             .frame(height: 82)
-            .glassEffect(
-                .regular.tint(Color.primary.opacity(0.03)),
-                in: .rect(cornerRadius: 0)
-            )
+            .compatGlassRect(cornerRadius: 0, tint: Color.primary.opacity(0.03))
             .overlay(alignment: .top) {
                 Rectangle()
                     .fill(Color.primary.opacity(0.12))
@@ -187,10 +181,7 @@ struct PlayerBar: View {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(DesignSystem.Colors.accentGradient)
                     .frame(width: 44, height: 44)
-                    .glassEffect(
-                        .regular.tint(Theme.accentPrimary.opacity(0.14)),
-                        in: .rect(cornerRadius: 10)
-                    )
+                    .compatGlassRect(cornerRadius: 10, tint: Theme.accentPrimary.opacity(0.14))
 
                 Image(systemName: "waveform")
                     .font(.system(size: 15, weight: .semibold))
@@ -214,7 +205,7 @@ struct PlayerBar: View {
     // MARK: - Playback Controls (centered)
 
     private var playbackControls: some View {
-        GlassEffectContainer(spacing: Spacing.sm) {
+        LoopMakerGlassContainer(spacing: Spacing.sm) {
             HStack(spacing: Spacing.sm) {
                 // Repeat mode toggle (separate chip)
                 PlayerControlButton(
@@ -251,10 +242,7 @@ struct PlayerBar: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .glassEffect(
-                    .regular.tint(Color.primary.opacity(0.08)),
-                    in: .capsule
-                )
+                .compatGlassCapsule(tint: Color.primary.opacity(0.08))
             }
         }
     }
@@ -277,9 +265,9 @@ struct PlayerBar: View {
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
-            .glassEffect(
-                .regular.tint(audioPlayer.volume > 0 ? Theme.accentPrimary.opacity(0.14) : Color.primary.opacity(0.08)).interactive(),
-                in: .circle
+            .compatGlassCircle(
+                tint: audioPlayer.volume > 0 ? Theme.accentPrimary.opacity(0.14) : Color.primary.opacity(0.08),
+                interactive: true
             )
 
             // Volume slider
@@ -298,10 +286,7 @@ struct PlayerBar: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .glassEffect(
-            .regular.tint(Color.primary.opacity(0.08)),
-            in: .capsule
-        )
+        .compatGlassCapsule(tint: Color.primary.opacity(0.08))
         .frame(width: 140, alignment: .trailing)
     }
 
@@ -377,10 +362,7 @@ struct PlayerControlButton: View {
         }
         .buttonStyle(.plain)
         .scaleEffect(isPressed ? 0.94 : (isHovered ? 1.06 : 1))
-        .glassEffect(
-            controlGlassStyle,
-            in: .circle
-        )
+        .controlGlassBackground(isPrimary: isPrimary, isActive: isActive, isHovered: isHovered)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -405,21 +387,26 @@ struct PlayerControlButton: View {
             )
             .frame(width: size.buttonSize, height: size.buttonSize)
     }
+}
 
-    private var controlGlassStyle: Glass {
+// MARK: - Player Control Glass Background
+
+private extension View {
+    @ViewBuilder
+    func controlGlassBackground(isPrimary: Bool, isActive: Bool, isHovered: Bool) -> some View {
         if isPrimary {
-            return .regular.tint(Theme.accentPrimary).interactive()
+            self.compatGlassCircle(tint: Theme.accentPrimary, interactive: true)
+        } else if isActive {
+            self.compatGlassCircle(tint: Theme.accentPrimary.opacity(0.2), interactive: true)
+        } else if isHovered {
+            self.compatGlassCircle(tint: Color.primary.opacity(0.1), interactive: true)
+        } else {
+            if #available(macOS 26, *) {
+                self.glassEffect(.clear, in: .circle)
+            } else {
+                self
+            }
         }
-
-        if isActive {
-            return .regular.tint(Theme.accentPrimary.opacity(0.2)).interactive()
-        }
-
-        if isHovered {
-            return .regular.tint(Color.primary.opacity(0.1)).interactive()
-        }
-
-        return .clear
     }
 }
 

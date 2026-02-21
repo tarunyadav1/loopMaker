@@ -23,7 +23,7 @@ struct SettingsSection<Content: View>: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14))
+            .compatGlassEffect(cornerRadius: 14)
 
             if let footer = footer {
                 Text(footer)
